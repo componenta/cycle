@@ -1,0 +1,34 @@
+{
+    "name": "componenta/cycle",
+    "description": "Cycle ORM integration for Componenta",
+    "type": "library",
+    "license": "MIT",
+    "require": {
+        "php": "^8.4",
+        "cycle/annotated": "^4.4",
+        "cycle/database": "^2.15",
+        "cycle/migrations": "^4.2",
+        "cycle/orm": "^2.12",
+        "cycle/schema-builder": "^2.11",
+        "componenta/caster": "^1.0",
+        "componenta/config": "^1.0",
+        "componenta/cqrs": "^1.0",
+        "componenta/di": "^1.0",
+        "componenta/identity": "^1.0",
+        "componenta/paginator": "^1.0",
+        "psr/container": "^2.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "Componenta\\Cycle\\": "src/"
+        }
+    },
+    "minimum-stability": "stable",
+    "extra": {
+        "componenta": {
+            "config-providers": [
+                "Componenta\\Cycle\\ConfigProvider"
+            ]
+        }
+    }
+}
