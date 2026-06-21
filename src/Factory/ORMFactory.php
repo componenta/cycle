@@ -51,7 +51,7 @@ final class ORMFactory implements LazyServiceFactoryInterface
         );
     }
 
-    public function lazy(ContainerInterface $container, ProxyFactoryInterface $proxyFactory): object
+    public function lazy(ContainerInterface $container, ProxyFactoryInterface $proxyFactory, array $context = []): object
     {
         // ORM construction builds a Factory + schema before instantiation;
         // delegate the entire body to first observable access via virtual

@@ -18,7 +18,7 @@ final class DatabaseFactory implements LazyServiceFactoryInterface
         return $container->get(DatabaseProviderInterface::class)->database();
     }
 
-    public function lazy(ContainerInterface $container, ProxyFactoryInterface $proxyFactory): object
+    public function lazy(ContainerInterface $container, ProxyFactoryInterface $proxyFactory, array $context = []): object
     {
         // The provider returns an opaque Database subclass - virtual proxy
         // is the only viable strategy. Forward all DatabaseInterface calls
