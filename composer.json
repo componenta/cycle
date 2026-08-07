@@ -12,8 +12,8 @@
         "cycle/schema-builder": "^2.11",
         "componenta/caster": "^1.0",
         "componenta/config": "^1.0",
-        "componenta/cqrs": "^1.0",
-        "componenta/di": "^1.0",
+        "componenta/cqrs": "^2.0@dev",
+        "componenta/di": "^2.0@dev",
         "componenta/identity": "^1.0",
         "componenta/paginator": "^1.0",
         "psr/container": "^2.0"
@@ -30,5 +30,14 @@
                 "Componenta\\Cycle\\ConfigProvider"
             ]
         }
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^12.0"
+    },
+    "scripts": {
+        "test": "@php vendor/bin/phpunit tests"
+    },
+    "config": {
+        "sort-packages": true
     }
 }
