@@ -12,8 +12,8 @@
         "cycle/schema-builder": "^2.11",
         "componenta/caster": "^1.0",
         "componenta/config": "^1.0",
-        "componenta/cqrs": "^2.0@dev",
-        "componenta/di": "^2.0@dev",
+        "componenta/cqrs": "^2.0",
+        "componenta/di": "^2.0",
         "componenta/identity": "^1.0",
         "componenta/paginator": "^1.0",
         "psr/container": "^2.0"
