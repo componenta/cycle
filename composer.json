@@ -11,8 +11,8 @@
         "cycle/orm": "^2.12",
         "cycle/schema-builder": "^2.11",
         "componenta/caster": "^1.0",
-        "componenta/config": "^2.0",
-        "componenta/di": "^2.0 || ^3.0 || ^4.0",
+        "componenta/config": "^2.0.2",
+        "componenta/di": "^2.0 || ^3.0 || ^4.0.2",
         "componenta/identity": "^1.0",
         "componenta/paginator": "^1.0",
         "psr/container": "^2.0"
