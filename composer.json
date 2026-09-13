@@ -11,10 +11,11 @@
         "cycle/orm": "^2.12",
         "cycle/schema-builder": "^2.11",
         "componenta/caster": "^1.0",
-        "componenta/config": "^2.0.2",
-        "componenta/di": "^2.0 || ^3.0 || ^4.0.2",
+        "componenta/config": "^3.0.0",
+        "componenta/di": "^5.0.0",
         "componenta/identity": "^1.0",
         "componenta/paginator": "^1.0",
+        "nesbot/carbon": "^3.0",
         "psr/container": "^2.0"
     },
     "autoload": {
@@ -28,6 +29,9 @@
             "config-providers": [
                 "Componenta\\Cycle\\ConfigProvider"
             ]
+        },
+        "branch-alias": {
+            "dev-main": "1.1.x-dev"
         }
     },
     "require-dev": {

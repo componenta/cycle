@@ -15,13 +15,15 @@ use Cycle\Database\Config\SQLite\MemoryConnectionConfig;
 use Cycle\Database\Config\SQLiteDriverConfig;
 use Cycle\Database\Config\SQLServer\TcpConnectionConfig as SQLServerTcpConnectionConfig;
 use Cycle\Database\Config\SQLServerDriverConfig;
-use function Componenta\Config\env;
+use Componenta\Config\ContainerValue;
+use Componenta\Config\Environment;
 
 class DatabaseConfigFactory
 {
-    public function __invoke(): DatabaseConfig
+    public function __invoke(ContainerValue $container): DatabaseConfig
     {
-        $driver = env('DB_DRIVER');
+        $env = $container->config->environment;
+        $driver = $env->string('DB_DRIVER');
 
         return new DatabaseConfig([
             'default' => 'default',
@@ -31,25 +33,25 @@ class DatabaseConfigFactory
                 ],
             ],
             'connections' => [
-                $driver => $this->createDriverConfig($driver),
+                $driver => $this->createDriverConfig($driver, $env),
             ],
         ]);
     }
 
-    private function createDriverConfig(string $driver): SQLiteDriverConfig|MySQLDriverConfig|PostgresDriverConfig|SQLServerDriverConfig
+    private function createDriverConfig(string $driver, Environment $env): SQLiteDriverConfig|MySQLDriverConfig|PostgresDriverConfig|SQLServerDriverConfig
     {
         return match ($driver) {
-            'sqlite' => $this->createSQLiteDriverConfig(),
-            'mysql' => $this->createMySQLDriverConfig(),
-            'postgres', 'pgsql' => $this->createPostgresDriverConfig(),
-            'sqlserver', 'mssql' => $this->createSQLServerDriverConfig(),
+            'sqlite' => $this->createSQLiteDriverConfig($env),
+            'mysql' => $this->createMySQLDriverConfig($env),
+            'postgres', 'pgsql' => $this->createPostgresDriverConfig($env),
+            'sqlserver', 'mssql' => $this->createSQLServerDriverConfig($env),
             default => throw DatabaseConfigException::unsupportedDriver($driver),
         };
     }
 
-    private function createSQLiteDriverConfig(): SQLiteDriverConfig
+    private function createSQLiteDriverConfig(Environment $env): SQLiteDriverConfig
     {
-        $database = env('DB_NAME');
+        $database = $env->string('DB_NAME');
 
         return new SQLiteDriverConfig(
             connection: $database === ':memory:'
@@ -59,44 +61,44 @@ class DatabaseConfigFactory
         );
     }
 
-    private function createMySQLDriverConfig(): MySQLDriverConfig
+    private function createMySQLDriverConfig(Environment $env): MySQLDriverConfig
     {
         return new MySQLDriverConfig(
             connection: new MySQLTcpConnectionConfig(
-                database: env('DB_NAME'),
-                host: env('DB_HOST', '127.0.0.1'),
-                port: (int) env('DB_PORT', 3306),
-                user: env('DB_USER'),
-                password: env('DB_PASSWORD', ''),
+                database: $env->string('DB_NAME'),
+                host: $env->string('DB_HOST', '127.0.0.1'),
+                port: $env->int('DB_PORT', 3306),
+                user: $env->string('DB_USER'),
+                password: $env->string('DB_PASSWORD', ''),
             ),
             queryCache: true,
         );
     }
 
-    private function createPostgresDriverConfig(): PostgresDriverConfig
+    private function createPostgresDriverConfig(Environment $env): PostgresDriverConfig
     {
         return new PostgresDriverConfig(
             connection: new PostgresTcpConnectionConfig(
-                database: env('DB_NAME'),
-                host: env('DB_HOST', '127.0.0.1'),
-                port: (int) env('DB_PORT', 5432),
-                user: env('DB_USER'),
-                password: env('DB_PASSWORD', ''),
+                database: $env->string('DB_NAME'),
+                host: $env->string('DB_HOST', '127.0.0.1'),
+                port: $env->int('DB_PORT', 5432),
+                user: $env->string('DB_USER'),
+                password: $env->string('DB_PASSWORD', ''),
             ),
-            schema: env('DB_SCHEMA', 'public'),
+            schema: $env->string('DB_SCHEMA', 'public'),
             queryCache: true,
         );
     }
 
-    private function createSQLServerDriverConfig(): SQLServerDriverConfig
+    private function createSQLServerDriverConfig(Environment $env): SQLServerDriverConfig
     {
         return new SQLServerDriverConfig(
             connection: new SQLServerTcpConnectionConfig(
-                database: env('DB_NAME'),
-                host: env('DB_HOST', '127.0.0.1'),
-                port: (int) env('DB_PORT', 1433),
-                user: env('DB_USER'),
-                password: env('DB_PASSWORD', ''),
+                database: $env->string('DB_NAME'),
+                host: $env->string('DB_HOST', '127.0.0.1'),
+                port: $env->int('DB_PORT', 1433),
+                user: $env->string('DB_USER'),
+                password: $env->string('DB_PASSWORD', ''),
             ),
             queryCache: true,
         );

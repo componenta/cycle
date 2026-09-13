@@ -44,7 +44,7 @@ class LazyGhostEntityFactory
     protected array $propertyCache = [];
 
     /**
-     * Cached list of extractable (non-static, non-virtual, non-relation) properties per class.
+     * Cached non-static, non-virtual properties, independent of the ORM relation map.
      *
      * @var array<class-string, list<\ReflectionProperty>>
      */
@@ -90,7 +90,7 @@ class LazyGhostEntityFactory
         $relations = $relMap->getRelations();
         $isLazyUninitialized = $reflection->isUninitializedLazyObject($entity);
 
-        $newPending = [];
+        $pending = $this->pendingRefs[$entity] ?? [];
         $scalarData = [];
 
         foreach ($data as $property => $value) {
@@ -98,7 +98,7 @@ class LazyGhostEntityFactory
 
             if ($relation !== null && $value instanceof ReferenceInterface) {
                 if ($isLazyUninitialized) {
-                    $newPending[$property] = ['ref' => $value, 'relation' => $relation];
+                    $pending[$property] = ['ref' => $value, 'relation' => $relation];
                 } else {
                     $resolved = $relation->collect($relation->resolve($value, true));
                     $prop = $this->getProperty($reflection, $property);
@@ -107,14 +107,16 @@ class LazyGhostEntityFactory
                         $prop->setValue($entity, $resolved);
                     }
                 }
-            } elseif ($relation === null) {
+            } else {
+                unset($pending[$property]);
                 $scalarData[$property] = $value;
             }
         }
 
-        if ($newPending !== []) {
-            $existing = $this->pendingRefs[$entity] ?? [];
-            $this->pendingRefs[$entity] = $existing + $newPending;
+        if ($pending !== []) {
+            $this->pendingRefs[$entity] = $pending;
+        } else {
+            unset($this->pendingRefs[$entity]);
         }
 
         // Phase 2: safe to touch the entity - all relation refs are registered.
@@ -136,7 +138,7 @@ class LazyGhostEntityFactory
             }
         }
 
-        if ($isLazyUninitialized && $newPending === []) {
+        if ($isLazyUninitialized && $pending === [] && $reflection->isUninitializedLazyObject($entity)) {
             $reflection->markLazyObjectAsInitialized($entity);
         }
 
@@ -263,7 +265,7 @@ class LazyGhostEntityFactory
     }
 
     /**
-     * Keyed by class name only - the RelationMap is stable after ORM boot.
+     * Class metadata is shared; relation exclusions use the current map.
      *
      * @return list<\ReflectionProperty>
      */
@@ -271,11 +273,10 @@ class LazyGhostEntityFactory
     {
         if (!isset($this->extractableProperties[$class])) {
             $reflection = $this->getReflection($class);
-            $relations = $relMap->getRelations();
             $properties = [];
 
             foreach ($reflection->getProperties() as $prop) {
-                if ($prop->isStatic() || $prop->isVirtual() || isset($relations[$prop->getName()])) {
+                if ($prop->isStatic() || $prop->isVirtual()) {
                     continue;
                 }
 
@@ -285,7 +286,12 @@ class LazyGhostEntityFactory
             $this->extractableProperties[$class] = $properties;
         }
 
-        return $this->extractableProperties[$class];
+        $relations = $relMap->getRelations();
+
+        return array_values(array_filter(
+            $this->extractableProperties[$class],
+            static fn (\ReflectionProperty $property): bool => !isset($relations[$property->getName()]),
+        ));
     }
 
     protected function resolveProperty(\ReflectionClass $reflection, string $name): \ReflectionProperty|false

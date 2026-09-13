@@ -5,15 +5,15 @@ declare(strict_types=1);
 namespace Componenta\Cycle\Factory;
 
 use Componenta\Cycle\ConfigKey;
-use Psr\Container\ContainerInterface;
+use Componenta\Config\ContainerValue;
 use Spiral\Core\Container;
 
 final class CoreFactoryFactory
 {
-    public function __invoke(ContainerInterface $container): Container
+    public function __invoke(ContainerValue $container): Container
     {
-        $bindings = $container->get(ConfigKey::CONFIG)
-            ->get(ConfigKey::ROOT)[ConfigKey::BINDINGS] ?? [];
+        $bindings = $container->config
+            ->array(ConfigKey::ROOT, [])[ConfigKey::BINDINGS] ?? [];
 
         $coreFactory = new Container();
 
