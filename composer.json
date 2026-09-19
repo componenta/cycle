@@ -12,7 +12,7 @@
         "cycle/schema-builder": "^2.11",
         "componenta/caster": "^1.0",
         "componenta/config": "^3.0.0",
-        "componenta/di": "^5.0.0",
+        "componenta/di": "^5.0.3",
         "componenta/identity": "^1.0",
         "componenta/paginator": "^1.0",
         "nesbot/carbon": "^3.0",
