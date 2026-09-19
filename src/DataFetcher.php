@@ -7,6 +7,7 @@ namespace Componenta\Cycle;
 use Componenta\Caster\CasterProviderInterface;
 use Componenta\Cycle\Filter\OrderFilter;
 use Componenta\Cycle\Filter\PaginationFilter;
+use Componenta\Cycle\Internal\RowCountQuery;
 use Componenta\Cycle\Query\PaginableInterface;
 use Componenta\Cycle\Query\RequiresTotalCountInterface;
 use Componenta\Cycle\Query\SelectableInterface;
@@ -14,12 +15,12 @@ use Componenta\Cycle\Query\SortableInterface;
 use Componenta\Stdlib\Paginator;
 use Closure;
 use Cycle\Database\DatabaseInterface;
-use Cycle\Database\Injection\Fragment;
 use Cycle\Database\Injection\Parameter;
 use Cycle\Database\Query\SelectQuery;
+use Cycle\Database\StatementInterface;
+use Fiber;
 use Generator;
 use ReflectionMethod;
-use ReflectionProperty;
 use RuntimeException;
 use WeakMap;
 
@@ -68,10 +69,8 @@ abstract class DataFetcher
      */
     private ?string $tableName = null;
 
-    /**
-     * @var WeakMap<object, array<string, true>>|null
-     */
-    private ?WeakMap $requestedRelationsCache = null;
+    /** @var WeakMap<object, array{query: PaginableInterface, hasNextPage: bool}>|null */
+    private ?WeakMap $paginationContexts = null;
 
     public function __construct(
         protected readonly DatabaseInterface $db,
@@ -309,12 +308,33 @@ abstract class DataFetcher
     {
         $results = [];
         $rawRows = [];
-
-        foreach ($rows as $row) {
-            if ($this->usesRelations) {
-                $rawRows[] = $row;
+        $hasNextPage = null;
+        if ($count === null && $query instanceof PaginableInterface) {
+            $context = $this->paginationContexts[Fiber::getCurrent() ?? $this] ?? null;
+            if ($context !== null && $context['query'] === $query) {
+                $hasNextPage = $context['hasNextPage'];
+            } elseif ($rows instanceof SelectQuery) {
+                $hasNextPage = $this->hasNextPage($rows, $query);
             }
-            $results[] = $this->fetchRow($row, $query);
+        }
+
+        $statement = $rows instanceof SelectQuery ? $rows->run() : null;
+        if ($statement !== null) {
+            $rows = (static function (StatementInterface $statement): Generator {
+                while (($row = $statement->fetch()) !== false) {
+                    yield $row;
+                }
+            })($statement);
+        }
+        try {
+            foreach ($rows as $row) {
+                if ($this->usesRelations) {
+                    $rawRows[] = $row;
+                }
+                $results[] = $this->fetchRow($row, $query);
+            }
+        } finally {
+            $statement?->close();
         }
 
         if ($this->usesRelations) {
@@ -322,7 +342,7 @@ abstract class DataFetcher
         }
 
         if ($query instanceof PaginableInterface) {
-            return new Paginator($results, $query->limit, $query->offset, $count);
+            return new Paginator($results, $query->limit, $query->offset, $count, $hasNextPage);
         }
 
         return $results;
@@ -342,144 +362,24 @@ abstract class DataFetcher
             return $this->fetchResults($select, null, $query);
         }
 
-        if (!$query instanceof RequiresTotalCountInterface) {
-            return $this->fetchResultsWithoutTotalCount($select, $query);
+        if ($query instanceof RequiresTotalCountInterface) {
+            return $this->fetchResults($select, $this->countRows($select), $query);
         }
 
-        // Joins (typically added by filters like Tag/Category) can cause
-        // row duplication that `COUNT(*) OVER()` would see as extra rows.
-        // MySQL and SQLite don't support `COUNT(DISTINCT x) OVER()` as a
-        // portable one-liner, so we fall back to the two-query path whose
-        // separate `COUNT(DISTINCT)` is semantically correct.
-        if ($this->hasJoins($select)) {
-            $count  = $this->countRows($select);
-            $offset = $query->offset ?? 0;
-
-            if ($offset > $count) {
-                return new Paginator([], $query->limit, $query->offset, $count);
-            }
-
-            return $this->fetchResults($select, $count, $query);
-        }
-
-        return $this->fetchResultsWithWindowCount($select, $query);
-    }
-
-    /**
-     * Fast pagination for infinite-scroll style reads.
-     *
-     * The select has already been limited to limit+1 by getFilters(). The
-     * extra row is used only to compute an exact next-page flag and is never
-     * exposed to callers or relation loaders.
-     */
-    private function fetchResultsWithoutTotalCount(SelectQuery $select, PaginableInterface $query): Paginator
-    {
-        $results = [];
-        $rawRows = [];
-        $hasNextPage = false;
-
-        foreach ($select as $row) {
-            if (count($results) >= $query->limit) {
-                $hasNextPage = true;
-                break;
-            }
-
-            if ($this->usesRelations) {
-                $rawRows[] = $row;
-            }
-            $results[] = $this->fetchRow($row, $query);
-        }
-
-        if ($this->usesRelations) {
-            $this->loadRelations($results, $rawRows, $query);
-        }
-
-        return new Paginator($results, $query->limit, $query->offset, null, $hasNextPage);
-    }
-
-    /**
-     * Single-query pagination: rides `COUNT(*) OVER()` along with the main
-     * SELECT. The total is read from the first result row; the extra
-     * column is stripped before downstream transformation so consumers
-     * never see it. If the result is empty (offset beyond last page, or
-     * a filter that matches nothing), a separate count query runs against
-     * the pre-window clone to preserve pagination metadata.
-     */
-    private function fetchResultsWithWindowCount(SelectQuery $select, PaginableInterface $query): Paginator
-    {
-        $cleanSelect = clone $select;
-
-        $select->columns([
-            ...$select->getColumns(),
-            new Fragment('COUNT(*) OVER() AS _row_count'),
-        ]);
-
-        $results = [];
-        $rawRows = [];
-        $count   = null;
-
-        foreach ($select as $row) {
-            if ($count === null) {
-                $count = (int) ($row['_row_count'] ?? 0);
-            }
-            unset($row['_row_count']);
-
-            if ($this->usesRelations) {
-                $rawRows[] = $row;
-            }
-            $results[] = $this->fetchRow($row, $query);
-        }
-
-        // No rows means the window column yielded nothing. For a first-page request
-        // (offset 0) the main SELECT empty means the filter truly matches
-        // nothing, so count is 0 and no extra query is needed. For an overshoot
-        // offset the underlying set may still have rows, so we run the
-        // conventional count to keep the paginator metadata honest.
-        if ($count === null) {
-            $offset = $query->offset ?? 0;
-            $count  = $offset > 0 ? $this->countRows($cleanSelect) : 0;
-        }
-
-        if ($this->usesRelations) {
-            $this->loadRelations($results, $rawRows, $query);
-        }
-
-        return new Paginator($results, $query->limit, $query->offset, $count);
-    }
-
-    /**
-     * Cached reflection: `joinTokens` is protected on `JoinTrait` inside
-     * Cycle DBAL. `false` marks "unavailable" (reflection failed, typically
-     * a Cycle upgrade that renamed the property) so we don't retry it on
-     * every call.
-     */
-    private static ReflectionProperty|false|null $joinTokensProperty = null;
-
-    /**
-     * Best-effort detection of join clauses so single-query pagination
-     * can avoid duplicate rows. On any reflection failure, meaning the Cycle
-     * internals changed and the property is gone, we assume joins are
-     * present (conservative: forces the two-query path) rather than
-     * silently producing an over-counted window result.
-     */
-    private function hasJoins(SelectQuery $select): bool
-    {
-        if (self::$joinTokensProperty === null) {
-            try {
-                self::$joinTokensProperty = new ReflectionProperty(SelectQuery::class, 'joinTokens');
-            } catch (\ReflectionException) {
-                self::$joinTokensProperty = false;
-            }
-        }
-
-        if (self::$joinTokensProperty === false) {
-            return true;
-        }
-
+        // Capture pagination before an override materializes or transforms the rows.
+        $hasNextPage = $this->hasNextPage($select, $query);
+        $contexts = $this->paginationContexts ??= new WeakMap();
+        $key = Fiber::getCurrent() ?? $this;
+        $previous = $contexts[$key] ?? null;
+        $contexts[$key] = ['query' => $query, 'hasNextPage' => $hasNextPage];
         try {
-            return self::$joinTokensProperty->getValue($select) !== [];
-        } catch (\ReflectionException) {
-            return true;
+            return $this->fetchResults($select, null, $query);
+        } finally {
+            if ($previous === null) {
+                unset($contexts[$key]);
+            } else {
+                $contexts[$key] = $previous;
+            }
         }
     }
 
@@ -509,11 +409,16 @@ abstract class DataFetcher
      */
     protected function countRows(SelectQuery $select): int
     {
-        return (clone $select)
-            ->limit(null)
-            ->offset(null)
-            ->distinct()
-            ->count();
+        return (new RowCountQuery($select))->count();
+    }
+
+    private function hasNextPage(SelectQuery $select, PaginableInterface $query): bool
+    {
+        if ($query->limit > 0 && $query->offset > PHP_INT_MAX - $query->limit) {
+            return false;
+        }
+
+        return (new RowCountQuery($select))->hasRowsAfter($query->offset + $query->limit);
     }
 
     /**
@@ -552,16 +457,10 @@ abstract class DataFetcher
             return [];
         }
 
-        $this->requestedRelationsCache ??= new WeakMap();
-
-        if (isset($this->requestedRelationsCache[$query])) {
-            return $this->requestedRelationsCache[$query];
-        }
-
         $with = $query->with;
 
         if ($with === null || $with === '') {
-            return $this->requestedRelationsCache[$query] = [];
+            return [];
         }
 
         $relations = is_array($with)
@@ -576,7 +475,7 @@ abstract class DataFetcher
             }
         }
 
-        return $this->requestedRelationsCache[$query] = $set;
+        return $set;
     }
 
     /**
@@ -822,11 +721,7 @@ abstract class DataFetcher
     protected function getFilters(?object $query): iterable
     {
         if ($query instanceof PaginableInterface) {
-            $limit = $query instanceof RequiresTotalCountInterface
-                ? $query->limit
-                : $query->limit + 1;
-
-            yield new PaginationFilter($limit, $query->offset);
+            yield new PaginationFilter($query->limit, $query->offset);
         }
 
         if ($query instanceof SortableInterface) {

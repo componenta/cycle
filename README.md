@@ -50,14 +50,14 @@ Read query objects can opt into behavior by implementing small contracts:
 | Contract | Enables |
 |---|---|
 | `PaginableInterface` | Limit/offset pagination. |
-| `RequiresTotalCountInterface` | Exact total count calculation. |
+| `RequiresTotalCountInterface` | Exposes the exact total count in the paginator. |
 | `SortableInterface` | Ordered reads. |
 | `SelectableInterface` | Explicit selected columns. |
 | `SearchableInterface` | Full-text-like filtering through a fetcher-defined search filter. |
 | `DateRangeInterface` | Date interval filtering. |
 | `ListQueryInterface` | Common marker for list query objects. |
 
-The fetcher applies only the behavior requested by the query object. Infinite-scroll reads can avoid total-count queries by omitting `RequiresTotalCountInterface`.
+`RequiresTotalCountInterface` controls whether the paginator exposes the total. Without it, `totalCount` is null and `hasNextPage` still reports whether another page exists.
 
 ## Fetcher Extension Points
 
@@ -84,7 +84,13 @@ Built-in typecasts are `UuidTypecast`, `EnumTypecast`, and `CarbonTypecast`.
 
 ## Performance Notes
 
-`DataFetcher` caches mapper-method resolution per instance, caches requested relation sets in a `WeakMap`, and uses single-query window counts when it is safe. When joins may duplicate rows, it falls back to a separate distinct count to preserve paginator correctness.
+`DataFetcher` caches mapper-method names per instance and reads the current relation selection from the query. Requested totals use an aggregate over the unpaginated selection. Without a total, a limited query checks for one result after the page: ordinary selections use EXISTS, while DISTINCT, grouping and set operations retain their result cardinality in a limited count query. MySQL and SQL Server describe the output width before derived-table counts, assigning unique column aliases for stars and duplicate names. The page query selects only the requested rows. Page fields pass through unchanged to row transformation. The fetcher closes its statements before loading relations, including when reading or transforming a row fails.
+
+The default database configuration uses the native SQL compiler. Query compilation caching is disabled because the upstream cache can change parameter binding for compound queries.
+
+Pagination tests use SQLite in memory by default. To run the same public-contract tests on another supported database, set `CYCLE_TEST_DB_DRIVER`, `CYCLE_TEST_DB_NAME` and the required `CYCLE_TEST_DB_HOST`, `CYCLE_TEST_DB_PORT`, `CYCLE_TEST_DB_USER`, `CYCLE_TEST_DB_PASSWORD` or `CYCLE_TEST_DB_SCHEMA` variables, then run `tests/DataFetcherPaginationTest.php`. These tests select literal rows and do not create or modify tables.
+
+`tests/DataFetcherCursorTest.php` uses the same MySQL connection variables to verify unbuffered reads, query caching, relation loading and recovery after row-conversion exceptions. It is skipped when a MySQL test connection has not been configured.
 
 ## Boundaries
 

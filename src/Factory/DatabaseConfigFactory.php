@@ -57,7 +57,7 @@ class DatabaseConfigFactory
             connection: $database === ':memory:'
                 ? new MemoryConnectionConfig()
                 : new FileConnectionConfig(database: $database),
-            queryCache: true,
+            queryCache: false,
         );
     }
 
@@ -71,7 +71,7 @@ class DatabaseConfigFactory
                 user: $env->string('DB_USER'),
                 password: $env->string('DB_PASSWORD', ''),
             ),
-            queryCache: true,
+            queryCache: false,
         );
     }
 
@@ -86,7 +86,7 @@ class DatabaseConfigFactory
                 password: $env->string('DB_PASSWORD', ''),
             ),
             schema: $env->string('DB_SCHEMA', 'public'),
-            queryCache: true,
+            queryCache: false,
         );
     }
 
@@ -100,7 +100,7 @@ class DatabaseConfigFactory
                 user: $env->string('DB_USER'),
                 password: $env->string('DB_PASSWORD', ''),
             ),
-            queryCache: true,
+            queryCache: false,
         );
     }
 }
