@@ -115,9 +115,23 @@ final class BinaryRelationsFetcher extends DataFetcher
     {
         $label = static fn (array $row): string => $row['label'];
         $this->batchBelongsTo($results, $rows, 'owner_id', 'cycle_test_binary_owners',
-            columns: ['label'], transform: $label);
+            columns: ['label'], transform: static function (array $row): string {
+                $key = $row['id'];
+                if (is_resource($key)) {
+                    TestCase::assertSame(0, ftell($key));
+                    TestCase::assertSame(16, strlen(stream_get_contents($key)));
+                }
+                return $row['label'];
+            });
         $this->batchHasMany($results, $rows, 'children', 'cycle_test_binary_children', 'parent_id',
-            columns: ['label'], transform: $label);
+            columns: ['label'], transform: static function (array $row): string {
+                $key = $row['parent_id'];
+                if (is_resource($key)) {
+                    TestCase::assertSame(0, ftell($key));
+                    TestCase::assertSame(16, strlen(stream_get_contents($key)));
+                }
+                return $row['label'];
+            });
         $this->batchBelongsToMany($results, $rows, 'tags', 'cycle_test_binary_tags',
             'cycle_test_binary_pivot', 'root_id', 'tag_id', columns: ['label'], transform: $label);
     }
