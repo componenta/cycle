@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace Componenta\Cycle\Internal;
 
 use Cycle\Database\Driver\CompilerInterface;
+use Cycle\Database\Driver\DriverInterface;
 use Cycle\Database\Exception\BuilderException;
 use Cycle\Database\Injection\FragmentInterface;
 use Cycle\Database\Query\QueryParameters;
@@ -53,31 +54,16 @@ final readonly class RowCountQuery implements FragmentInterface
         $columns = '';
 
         if (!$directExistence && in_array($driver->getType(), ['MySQL', 'SQLServer'], true)) {
-            // Describe every output column, including stars and duplicate names, without reading rows.
-            $metadataParameters = new QueryParameters();
-            $metadataSql = $driver->getQueryCompiler()->compile(
-                $metadataParameters,
-                $this->source->getPrefix() ?? '',
-                new self($this->source, firstSelectOnly: true),
-            );
-            if ($driver->getType() === 'SQLServer') {
-                $metadataSql = preg_replace('/\\ASELECT(\\s+DISTINCT)?\\s+/i', '$0TOP (0) ', $metadataSql, 1, $replacements);
-                if ($metadataSql === null || $metadataSql === '' || $replacements !== 1) {
-                    throw new BuilderException('Cannot prepare a zero-row SQL Server query.');
-                }
-            } else {
-                $metadataSql .= "\nLIMIT 0";
+            // A plain identifier (with an optional AS alias) contributes
+            // exactly one column. Stars and SQL fragments require actual
+            // metadata; guessing their width would break duplicate aliases.
+            $width = self::knownProjectionWidth($tokens['columns'])
+                ?? $this->describeProjection($driver);
+            $names = [];
+            for ($index = 0; $index < $width; ++$index) {
+                $names[] = 'c' . $index;
             }
-            $metadata = $driver->query($metadataSql, $metadataParameters->getParameters());
-            try {
-                $names = [];
-                for ($index = 0; $index < $metadata->columnCount(); ++$index) {
-                    $names[] = 'c' . $index;
-                }
-                $columns = '(' . implode(', ', $names) . ')';
-            } finally {
-                $metadata->close();
-            }
+            $columns = '(' . implode(', ', $names) . ')';
         }
 
         $aggregate = $driver->getType() === 'SQLServer' ? 'COUNT_BIG(*)' : 'COUNT(*)';
@@ -98,6 +84,49 @@ final readonly class RowCountQuery implements FragmentInterface
             throw new UnexpectedValueException('The count query did not return an integer.');
         } finally {
             $statement->close();
+        }
+    }
+
+    /** @param array<array-key, mixed> $columns */
+    private static function knownProjectionWidth(array $columns): ?int
+    {
+        if ($columns === []) {
+            return null;
+        }
+        foreach ($columns as $column) {
+            if (!is_string($column) || preg_match(
+                '/\A[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?(?:[ \t]+AS[ \t]+[A-Za-z_][A-Za-z0-9_]*)?\z/i',
+                $column,
+            ) !== 1) {
+                return null;
+            }
+        }
+
+        return count($columns);
+    }
+
+    private function describeProjection(DriverInterface $driver): int
+    {
+        // Describe every output column, including stars and duplicate names, without reading rows.
+        $metadataParameters = new QueryParameters();
+        $metadataSql = $driver->getQueryCompiler()->compile(
+            $metadataParameters,
+            $this->source->getPrefix() ?? '',
+            new self($this->source, firstSelectOnly: true),
+        );
+        if ($driver->getType() === 'SQLServer') {
+            $metadataSql = preg_replace('/\\ASELECT(\\s+DISTINCT)?\\s+/i', '$0TOP (0) ', $metadataSql, 1, $replacements);
+            if ($metadataSql === null || $metadataSql === '' || $replacements !== 1) {
+                throw new BuilderException('Cannot prepare a zero-row SQL Server query.');
+            }
+        } else {
+            $metadataSql .= "\nLIMIT 0";
+        }
+        $metadata = $driver->query($metadataSql, $metadataParameters->getParameters());
+        try {
+            return $metadata->columnCount();
+        } finally {
+            $metadata->close();
         }
     }
 

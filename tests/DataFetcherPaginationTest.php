@@ -398,6 +398,62 @@ final class DataFetcherPaginationTest extends TestCase
         }
     }
 
+    public function testSqlServerAndOtherDialectsUseOnlyNecessaryPaginationQueries(): void
+    {
+        $db = $this->database();
+        $driver = $db->getDriver(DatabaseInterface::READ);
+        $db->query('SELECT 1')->close();
+        $logger = new class extends \Psr\Log\AbstractLogger {
+            /** @var list<string> */
+            public array $queries = [];
+
+            public function log($level, string|\Stringable $message, array $context = []): void
+            {
+                if ($level === \Psr\Log\LogLevel::INFO && str_starts_with(ltrim((string) $message), 'SELECT')) {
+                    $this->queries[] = (string) $message;
+                }
+            }
+        };
+        $driver->setLogger($logger);
+
+        try {
+            $source = $db->select('id', 'label AS category')->from(new Fragment(
+                "(SELECT 1 AS id, 'a' AS label UNION ALL SELECT 2, 'b') AS items",
+            ))->orderBy('id');
+            $fetcher = new PaginationFetcher($db, $source);
+
+            $page = $fetcher(new CountedPage(1));
+            self::assertSame([['id' => 1, 'category' => 'a']], $page->results);
+            self::assertSame(2, $page->totalCount);
+            self::assertTrue($page->hasNextPage);
+            self::assertCount(2, $logger->queries, 'Known projection width must not require metadata SQL.');
+
+            $logger->queries = [];
+            $page = $fetcher(new Page(1));
+            self::assertSame([['id' => 1, 'category' => 'a']], $page->results);
+            self::assertTrue($page->hasNextPage);
+            self::assertCount(2, $logger->queries, 'An existence probe must not request metadata SQL.');
+
+            foreach (['*', new Fragment('id, label')] as $projection) {
+                $logger->queries = [];
+                $source = $db->select($projection)->from(new Fragment(
+                    "(SELECT 1 AS id, 'a' AS label UNION ALL SELECT 2, 'b') AS items",
+                ))->orderBy('id');
+                $page = (new PaginationFetcher($db, $source))(new CountedPage(1));
+
+                self::assertSame([['id' => 1, 'label' => 'a']], $page->results);
+                self::assertSame(2, $page->totalCount);
+                self::assertCount(
+                    in_array($db->getType(), ['MySQL', 'SQLServer'], true) ? 3 : 2,
+                    $logger->queries,
+                    'Unknown projection widths must retain the metadata fallback on relevant dialects.',
+                );
+            }
+        } finally {
+            $driver->setLogger(new \Psr\Log\NullLogger());
+        }
+    }
+
     public function testSqlServerUnorderedDistinctPagesKeepTheOriginalProjectionAndCardinality(): void
     {
         if (!in_array(getenv('CYCLE_TEST_DB_DRIVER'), ['sqlserver', 'mssql'], true)) {
