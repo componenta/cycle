@@ -73,6 +73,19 @@ final readonly class RelationLoader
             }
         }
 
+        $streamRows = [];
+        if ($hasRepeatedKeys && $transform !== null) {
+            // Inspect each distinct related row once, not once per parent.
+            foreach ($indexed as $id => $row) {
+                foreach ($row as $value) {
+                    if (is_resource($value) && get_resource_type($value) === 'stream') {
+                        $streamRows[$id] = true;
+                        break;
+                    }
+                }
+            }
+        }
+
         foreach ($results as $i => &$result) {
             $fk = $rows[$i][$foreignKey] ?? null;
             if (is_resource($fk)) {
@@ -81,7 +94,7 @@ final readonly class RelationLoader
             $related = $fk !== null ? ($indexed[$fk] ?? null) : null;
             if ($related !== null && $transform !== null) {
                 // Shared rows need independent streams for each callback.
-                if ($hasRepeatedKeys) {
+                if (isset($streamRows[$fk])) {
                     $related = self::copyStreams($related);
                 }
                 $related = $transform($related);
