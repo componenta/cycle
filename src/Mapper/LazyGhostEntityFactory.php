@@ -82,7 +82,7 @@ class LazyGhostEntityFactory
      * Cycle ORM passes both the inner key (e.g. `role_id`) and the relation
      * (e.g. `role` as ReferenceInterface) in $data. Setting scalar properties before
      * registering relation refs can trigger the ghost initializer via the fallback path
-     * (`@$entity->$prop = $value`), leaving relation properties uninitialized forever.
+     * (dynamic property assignment), leaving relation properties uninitialized forever.
      */
     public function upgrade(RelationMap $relMap, object $entity, array $data): object
     {
@@ -130,10 +130,18 @@ class LazyGhostEntityFactory
 
                 $prop->setRawValueWithoutLazyInitialization($entity, $value);
             } else {
-                // Dynamic property or virtual - fallback (matches ClosureHydrator behavior).
-                try {
-                    @$entity->{$property} = $value;
-                } catch (\Throwable) {
+                $declared = $this->findDeclaredProperty($reflection, $property);
+                if ($declared !== null) {
+                    // Static and computed properties are not ORM storage fields.
+                    continue;
+                }
+
+                // Schema-only fields need not be exposed on the entity. Honor
+                // explicit dynamic-property support, but never suppress failures.
+                if ($reflection->hasMethod('__set') || $this->allowsDynamicProperties($reflection)
+                    || property_exists($entity, $property)
+                ) {
+                    $entity->{$property} = $value;
                 }
             }
         }
@@ -319,5 +327,20 @@ class LazyGhostEntityFactory
         }
 
         return null;
+    }
+
+    private function allowsDynamicProperties(\ReflectionClass $reflection): bool
+    {
+        if ($reflection->getName() === \stdClass::class || $reflection->isSubclassOf(\stdClass::class)) {
+            return true;
+        }
+
+        for ($current = $reflection; $current !== false; $current = $current->getParentClass()) {
+            if ($current->getAttributes(\AllowDynamicProperties::class) !== []) {
+                return true;
+            }
+        }
+
+        return false;
     }
 }

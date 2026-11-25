@@ -126,6 +126,29 @@ final class LazyGhostEntityFactoryTest extends TestCase {
         self::assertSame(7, $entity->id());
         self::assertSame(['label' => 'stored', 'id' => 7], $factory->extractData($map, $entity));
     }
+
+    public function testPropagatesErrorsFromExplicitDynamicPropertyHandling(): void
+    {
+        $map = $this->relationMap(false);
+        $factory = new LazyGhostEntityFactory();
+        $entity = $factory->create($map, RejectingEntity::class);
+        $this->expectException(\DomainException::class);
+        $this->expectExceptionMessage('Unexpected field.');
+
+        $factory->upgrade($map, $entity, ['id' => 1, 'unknown' => 2]);
+    }
+
+    public function testIgnoresSchemaOnlyFieldsWithoutCreatingDynamicProperties(): void
+    {
+        $map = $this->relationMap(false);
+        $factory = new LazyGhostEntityFactory();
+        $entity = $factory->create($map, HydratedEntity::class);
+
+        $factory->upgrade($map, $entity, ['id' => 1, 'schema_only' => 2]);
+
+        self::assertSame(1, $entity->id);
+        self::assertFalse(property_exists($entity, 'schema_only'));
+    }
 }
 
 final class CollectionEntity
@@ -148,4 +171,15 @@ class BaseInheritedEntity
 final class InheritedEntity extends BaseInheritedEntity
 {
     public string $label;
+}
+
+
+final class RejectingEntity
+{
+    public int $id;
+
+    public function __set(string $name, mixed $value): void
+    {
+        throw new \DomainException('Unexpected field.');
+    }
 }
