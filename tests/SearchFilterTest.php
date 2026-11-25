@@ -89,6 +89,25 @@ final class SearchFilterTest extends TestCase
         }
     }
 
+    public function testPrefixedDatabaseDoesNotPrefixStructuredSubqueryAliases(): void
+    {
+        $db = $this->database(false)->withPrefix('tenant_');
+        $db->execute('CREATE TABLE tenant_records (id INTEGER, name TEXT, "имя_поля" TEXT, "дата" TEXT)');
+        $db->execute("INSERT INTO tenant_records VALUES (1, 'Alpha', 'Alpha', '2025-02-05'), (2, 'Beta', 'Beta', '2025-02-06')");
+
+        foreach (['items.name', 'items.имя_поля'] as $column) {
+            $source = $db->select('id', 'name', 'имя_поля', 'дата')->from('records');
+            $query = $db->select('id')->from(new \Cycle\Database\Injection\SubQuery($source, 'items'));
+            $rows = (new SearchFilter([$column], 'ALPHA', LikeMode::Exact))->apply($query)->fetchAll();
+            self::assertSame([['id' => 1]], $rows);
+        }
+
+        $source = $db->select('id', 'дата')->from('records');
+        $query = $db->select('id')->from(new \Cycle\Database\Injection\SubQuery($source, 'items'));
+        $filter = new \Componenta\Cycle\Filter\DateTimeFilter('items.дата', new \DateTimeImmutable('2025-02-05'));
+        self::assertSame([['id' => 1]], $filter->apply($query)->fetchAll());
+    }
+
     private function database(bool $useEnvironment = true): DatabaseInterface
     {
         $settings = ['DB_DRIVER' => 'sqlite', 'DB_NAME' => ':memory:'];

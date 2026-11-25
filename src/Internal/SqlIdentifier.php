@@ -7,6 +7,7 @@ namespace Componenta\Cycle\Internal;
 use Cycle\Database\Injection\Expression;
 use Cycle\Database\Injection\Fragment;
 use Cycle\Database\Injection\FragmentInterface;
+use Cycle\Database\Injection\SubQuery;
 use Cycle\Database\Query\SelectQuery;
 
 /** @internal Validates column names, not arbitrary SQL expressions. */
@@ -30,17 +31,32 @@ final class SqlIdentifier
         string $template,
         mixed ...$parameters,
     ): FragmentInterface {
-        if (preg_match('/\A[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?\z/', $column) === 1) {
+        $prefix = $query->getPrefix() ?? '';
+        $qualified = str_contains($column, '.');
+        $derivedAlias = false;
+
+        if ($prefix !== '' && $qualified) {
+            [$qualifier, $name] = explode('.', $column, 2);
+            // The DBAL compiler does not register structured FROM subquery
+            // aliases in the identifier quoter. Never apply a table prefix
+            // to an explicitly declared derived-table alias.
+            foreach ($query->getTables() as $table) {
+                if ($table instanceof SubQuery && $table->getTokens()['alias'] === $qualifier) {
+                    $derivedAlias = true;
+                    break;
+                }
+            }
+        }
+
+        if (!$derivedAlias && preg_match('/\A[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?\z/', $column) === 1) {
             return new Expression(sprintf($template, $column), ...$parameters);
         }
 
         self::assertColumn($column);
         $driver = $query->getDriver()
-            ?? throw new \InvalidArgumentException('Unicode SQL expressions require a query with an associated driver.');
-        $prefix = $query->getPrefix() ?? '';
-        if ($prefix !== '' && str_contains($column, '.')) {
-            [$qualifier, $name] = explode('.', $column, 2);
-            if (!self::isQueryAlias($query, $qualifier, $prefix)) {
+            ?? throw new \InvalidArgumentException('Quoted SQL expressions require a query with an associated driver.');
+        if ($prefix !== '' && $qualified) {
+            if (!$derivedAlias && !self::isQueryAlias($query, $qualifier, $prefix)) {
                 $qualifier = $prefix . $qualifier;
             }
             $column = $qualifier . '.' . $name;
