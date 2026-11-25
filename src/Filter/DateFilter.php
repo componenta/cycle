@@ -5,7 +5,9 @@ declare(strict_types=1);
 namespace Componenta\Cycle\Filter;
 
 use Componenta\Cycle\FilterInterface;
+use Componenta\Cycle\Internal\CalendarExpression;
 use Componenta\Cycle\Internal\SqlIdentifier;
+use Cycle\Database\Injection\Fragment;
 use Cycle\Database\Injection\Parameter;
 use Cycle\Database\Query\SelectQuery;
 
@@ -14,7 +16,7 @@ use Cycle\Database\Query\SelectQuery;
  *
  * Accepts array from DateFilterCaster:
  * - ['from' => 'Y-m-d']              - from date (>=)
- * - ['to' => 'Y-m-d']                - to date (<=)
+ * - ['to' => 'Y-m-d']                - through the end date (exclusive next midnight)
  * - ['from' => 'Y-m-d', 'to' => ...] - range
  * - ['dates' => ['Y-m-d', ...]]       - specific dates (IN)
  */
@@ -34,26 +36,45 @@ final readonly class DateFilter implements FilterInterface
     public function apply(SelectQuery $query): SelectQuery
     {
         if (isset($this->date['dates'])) {
+            if (!is_array($this->date['dates']) || !array_is_list($this->date['dates'])) {
+                throw new \InvalidArgumentException('Specific dates must be a list of dates.');
+            }
+            if ($this->date['dates'] === []) {
+                return $query->where(new Fragment('1 = 0'));
+            }
+            foreach ($this->date['dates'] as $date) {
+                self::parseDate($date);
+            }
             return $query->where(
-                "DATE($this->column)",
+                CalendarExpression::forQuery($query, $this->column, 'DATE'),
                 'in',
                 new Parameter($this->date['dates']),
             );
         }
 
-        if (isset($this->date['from'])) {
-            $query = $query->where($this->column, '>=', $this->date['from'] . ' 00:00:00');
+        $from = isset($this->date['from']) ? self::parseDate($this->date['from']) : null;
+        $to = isset($this->date['to']) ? self::parseDate($this->date['to']) : null;
+        if ($from !== null) {
+            $query = $query->where($this->column, '>=', $from->format('Y-m-d H:i:s'));
         }
 
-        if (isset($this->date['to'])) {
-            $end = \DateTimeImmutable::createFromFormat('!Y-m-d', $this->date['to'], new \DateTimeZone('UTC'));
-            if ($end === false || $end->format('Y-m-d') !== $this->date['to']) {
-                throw new \InvalidArgumentException('Invalid end date; expected Y-m-d.');
-            }
-
-            $query = $query->where($this->column, '<', $end->modify('+1 day')->format('Y-m-d H:i:s'));
+        if ($to !== null) {
+            $query = $query->where($this->column, '<', $to->modify('+1 day')->format('Y-m-d H:i:s'));
         }
 
         return $query;
+    }
+
+    private static function parseDate(mixed $value): \DateTimeImmutable
+    {
+        if (!is_string($value) || preg_match('/\A[0-9]{4}-[0-9]{2}-[0-9]{2}\z/', $value) !== 1) {
+            throw new \InvalidArgumentException('Invalid calendar date; expected Y-m-d.');
+        }
+        $date = \DateTimeImmutable::createFromFormat('!Y-m-d', $value, new \DateTimeZone('UTC'));
+        if ($date === false || $date->format('Y-m-d') !== $value) {
+            throw new \InvalidArgumentException('Invalid calendar date; expected Y-m-d.');
+        }
+
+        return $date;
     }
 }

@@ -5,14 +5,12 @@ declare(strict_types=1);
 namespace Componenta\Cycle\Filter;
 
 use Componenta\Cycle\FilterInterface;
+use Componenta\Cycle\Internal\CalendarExpression;
 use Componenta\Cycle\Internal\SqlIdentifier;
-use Cycle\Database\Injection\Expression;
 use Cycle\Database\Query\SelectQuery;
 
 final readonly class DateTimeBetweenFilter implements FilterInterface
 {
-    private const array ALLOWED_FUNCTIONS = ['DATE', 'YEAR', 'MONTH', 'DAY'];
-
     public function __construct(
         private string $column,
         private \DateTimeInterface $from,
@@ -22,22 +20,16 @@ final readonly class DateTimeBetweenFilter implements FilterInterface
     ) {
         SqlIdentifier::assertColumn($this->column);
 
-        if (!in_array(strtoupper($this->sqlFunction), self::ALLOWED_FUNCTIONS, true)) {
-            throw new \InvalidArgumentException(
-                sprintf('SQL function must be one of: %s', implode(', ', self::ALLOWED_FUNCTIONS))
-            );
-        }
+        CalendarExpression::assertFunction($this->sqlFunction);
     }
 
     public function apply(SelectQuery $query): SelectQuery
     {
-        $func = strtoupper($this->sqlFunction);
-
         return $query->where(
-            new Expression("{$func}({$this->column})"),
+            CalendarExpression::forQuery($query, $this->column, $this->sqlFunction),
             'between',
-            $this->from->format($this->dateTimeFormat),
-            $this->to->format($this->dateTimeFormat)
+            CalendarExpression::value($this->from, $this->dateTimeFormat, $this->sqlFunction),
+            CalendarExpression::value($this->to, $this->dateTimeFormat, $this->sqlFunction)
         );
     }
 }
