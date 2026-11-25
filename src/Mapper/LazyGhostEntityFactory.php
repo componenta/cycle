@@ -275,12 +275,18 @@ class LazyGhostEntityFactory
             $reflection = $this->getReflection($class);
             $properties = [];
 
-            foreach ($reflection->getProperties() as $prop) {
-                if ($prop->isStatic() || $prop->isVirtual()) {
-                    continue;
+            // Resolve each name exactly as upgrade() does, preferring the most-derived declaration.
+            $names = [];
+            for ($current = $reflection; $current !== false; $current = $current->getParentClass()) {
+                foreach ($current->getProperties() as $prop) {
+                    $names[$prop->getName()] = true;
                 }
-
-                $properties[] = $prop;
+            }
+            foreach (array_keys($names) as $name) {
+                $prop = $this->getProperty($reflection, $name);
+                if ($prop !== null) {
+                    $properties[] = $prop;
+                }
             }
 
             $this->extractableProperties[$class] = $properties;
@@ -296,16 +302,22 @@ class LazyGhostEntityFactory
 
     protected function resolveProperty(\ReflectionClass $reflection, string $name): \ReflectionProperty|false
     {
-        if (!$reflection->hasProperty($name)) {
-            return false;
-        }
-
-        $prop = $reflection->getProperty($name);
-
-        if ($prop->isStatic() || $prop->isVirtual()) {
+        $prop = $this->findDeclaredProperty($reflection, $name);
+        if ($prop === null || $prop->isStatic() || $prop->isVirtual()) {
             return false;
         }
 
         return $prop;
+    }
+
+    private function findDeclaredProperty(\ReflectionClass $reflection, string $name): ?\ReflectionProperty
+    {
+        for ($current = $reflection; $current !== false; $current = $current->getParentClass()) {
+            if ($current->hasProperty($name)) {
+                return $current->getProperty($name);
+            }
+        }
+
+        return null;
     }
 }

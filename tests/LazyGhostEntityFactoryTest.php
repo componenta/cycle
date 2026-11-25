@@ -114,10 +114,38 @@ final class LazyGhostEntityFactoryTest extends TestCase {
         self::assertSame([], $entity->related);
         self::assertSame(['related' => []], $factory->extractRelations($map, $entity));
     }
+
+    public function testHydratesAndExtractsPrivatePropertiesDeclaredOnAnAncestor(): void
+    {
+        $map = $this->relationMap(false);
+        $factory = new LazyGhostEntityFactory();
+        $entity = $factory->create($map, InheritedEntity::class);
+
+        $factory->upgrade($map, $entity, ['id' => 7, 'label' => 'stored']);
+
+        self::assertSame(7, $entity->id());
+        self::assertSame(['label' => 'stored', 'id' => 7], $factory->extractData($map, $entity));
+    }
 }
 
 final class CollectionEntity
 {
     public int $id;
     public array $related;
+}
+
+
+class BaseInheritedEntity
+{
+    private int $id;
+
+    public function id(): int
+    {
+        return $this->id;
+    }
+}
+
+final class InheritedEntity extends BaseInheritedEntity
+{
+    public string $label;
 }
