@@ -43,3 +43,20 @@ CYCLE_BENCH_SOURCE_ROOT="$baseline/src" composer bench
 composer bench
 rm -rf "$baseline"
 ```
+
+## Performance review (25 November 2026)
+
+The complete package source at `19db08122391796313660e0d3d871245b7597693` was compared with `2f31a412ff081fbc59efe0021472c98f6eb9f467` on the same PHP 8.5.13 runner using the same installed dependencies. See the [comparison run](https://github.com/componenta/cycle/actions/runs/45532189092/job/138929968553). Each median is over nine samples.
+
+| Case | Before, ms | After, ms | Change in time |
+| --- | ---: | ---: | ---: |
+| Default mapping, 20,000 rows | 23.0982 | 11.3648 | -50.8% |
+| Custom mapping, 20,000 rows | 30.2427 | 30.0263 | -0.7% |
+| Page without total, 100 rows | 0.1173 | 0.0920 | -21.6% |
+| Page with total, 100 rows | 0.1113 | 0.0867 | -22.1% |
+| Three relation types, 1,000 rows | 3.5819 | 3.2405 | -9.5% |
+| Entity extraction with relations, 20,000 calls | 29.2542 | 14.9872 | -48.8% |
+| Entity extraction without relations, 20,000 calls | 29.9940 | 16.3781 | -45.4% |
+| Entity hydration and extraction, 10,000 entities | 46.0754 | 37.2850 | -19.1% |
+
+These are controlled micro/integration benchmark measurements, not network or production latency guarantees. MySQL and SQL Server additionally have regression tests proving that counted pages with known projection widths use two SELECT statements instead of three; unknown widths retain metadata discovery. Normal CI executes correctness tests only.
