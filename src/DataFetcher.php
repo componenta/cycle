@@ -8,6 +8,7 @@ use Componenta\Caster\CasterProviderInterface;
 use Componenta\Cycle\Filter\OrderFilter;
 use Componenta\Cycle\Filter\PaginationFilter;
 use Componenta\Cycle\Internal\PaginationOrder;
+use Componenta\Cycle\Internal\RelationLoader;
 use Componenta\Cycle\Internal\RowCountQuery;
 use Componenta\Cycle\Internal\SqlIdentifier;
 use Componenta\Cycle\Query\PaginableInterface;
@@ -17,7 +18,6 @@ use Componenta\Cycle\Query\SortableInterface;
 use Componenta\Stdlib\Paginator;
 use Closure;
 use Cycle\Database\DatabaseInterface;
-use Cycle\Database\Injection\Parameter;
 use Cycle\Database\Query\SelectQuery;
 use Cycle\Database\StatementInterface;
 use Fiber;
@@ -28,7 +28,7 @@ use WeakMap;
 
 abstract class DataFetcher
 {
-    private const int RELATION_BATCH_SIZE = 500;
+    private ?RelationLoader $relationLoader = null;
 
     /**
      * Fields to exclude from results
@@ -517,60 +517,7 @@ abstract class DataFetcher
                 : $foreignKey
         );
 
-        if ($results === []) {
-            return;
-        }
-
-        if ($rows === []) {
-            foreach ($results as &$result) {
-                $result[$key] = null;
-            }
-            return;
-        }
-
-        // Collect unique non-null foreign key values
-        $ids = [];
-        foreach ($rows as $row) {
-            if (isset($row[$foreignKey])) {
-                $ids[] = $row[$foreignKey];
-            }
-        }
-        $ids = array_values(array_unique($ids));
-
-        if ($ids === []) {
-            foreach ($results as &$result) {
-                $result[$key] = null;
-            }
-            return;
-        }
-
-        // Ensure tableKey is in columns for indexing
-        $selectColumns = $columns;
-        if ($columns !== ['*'] && !in_array($tableKey, $selectColumns, true)) {
-            $selectColumns[] = $tableKey;
-        }
-
-        // Index by table key
-        $indexed = [];
-        foreach (array_chunk($ids, self::RELATION_BATCH_SIZE) as $chunk) {
-            $relatedRows = $this->db
-                ->select($selectColumns)
-                ->from($table)
-                ->where($tableKey, 'IN', new Parameter($chunk))
-                ->fetchAll();
-
-            foreach ($relatedRows as $row) {
-                $indexed[$row[$tableKey]] = $row;
-            }
-        }
-
-        foreach ($results as $i => &$result) {
-            $fk = $rows[$i][$foreignKey] ?? null;
-            $related = $fk !== null ? ($indexed[$fk] ?? null) : null;
-            $result[$key] = $related !== null && $transform !== null
-                ? $transform($related)
-                : $related;
-        }
+        $this->relationLoader()->belongsTo($results, $rows, $foreignKey, $table, $columns, $key, $tableKey, $transform);
     }
 
     /**
@@ -598,53 +545,7 @@ abstract class DataFetcher
         array $columns = ['*'],
         ?Closure $transform = null,
     ): void {
-        if ($results === []) {
-            return;
-        }
-
-        if ($rows === []) {
-            foreach ($results as &$result) {
-                $result[$resultKey] = [];
-            }
-            return;
-        }
-
-        $ids = array_values(array_unique(array_filter(
-            array_column($rows, $localKey),
-            static fn (mixed $id): bool => $id !== null,
-        )));
-
-        if ($ids === []) {
-            foreach ($results as &$result) {
-                $result[$resultKey] = [];
-            }
-            return;
-        }
-
-        // Ensure foreign key is in columns for grouping
-        $selectColumns = $columns;
-        if ($columns !== ['*'] && !in_array($foreignKey, $selectColumns, true)) {
-            $selectColumns[] = $foreignKey;
-        }
-
-        // Group by foreign key
-        $grouped = [];
-        foreach (array_chunk($ids, self::RELATION_BATCH_SIZE) as $chunk) {
-            $relatedRows = $this->db
-                ->select($selectColumns)
-                ->from($table)
-                ->where($foreignKey, 'IN', new Parameter($chunk))
-                ->fetchAll();
-
-            foreach ($relatedRows as $row) {
-                $grouped[$row[$foreignKey]][] = $transform !== null ? $transform($row) : $row;
-            }
-        }
-
-        foreach ($results as $i => &$result) {
-            $localId = $rows[$i][$localKey] ?? null;
-            $result[$resultKey] = $localId !== null ? ($grouped[$localId] ?? []) : [];
-        }
+        $this->relationLoader()->hasMany($results, $rows, $resultKey, $table, $foreignKey, $localKey, $columns, $transform);
     }
 
     /**
@@ -678,58 +579,15 @@ abstract class DataFetcher
         array $columns = ['*'],
         ?Closure $transform = null,
     ): void {
-        if ($results === []) {
-            return;
-        }
+        $this->relationLoader()->belongsToMany(
+            $results, $rows, $resultKey, $relatedTable, $pivotTable, $pivotLocalKey,
+            $pivotForeignKey, $localKey, $relatedKey, $columns, $transform,
+        );
+    }
 
-        if ($rows === []) {
-            foreach ($results as &$result) {
-                $result[$resultKey] = [];
-            }
-            return;
-        }
-
-        $ids = array_values(array_unique(array_filter(
-            array_column($rows, $localKey),
-            static fn (mixed $id): bool => $id !== null,
-        )));
-
-        if ($ids === []) {
-            foreach ($results as &$result) {
-                $result[$resultKey] = [];
-            }
-            return;
-        }
-
-        // Build select columns with table alias prefix
-        $selectColumns = $columns === ['*']
-            ? ['r.*']
-            : array_map(static fn(string $c) => "r.$c", $columns);
-        $pivotLocalKeyAlias = '_pivot_local_key';
-        $selectColumns[] = "p.$pivotLocalKey AS $pivotLocalKeyAlias";
-
-        // Group by local key
-        $grouped = [];
-        foreach (array_chunk($ids, self::RELATION_BATCH_SIZE) as $chunk) {
-            $relatedRows = $this->db
-                ->select($selectColumns)
-                ->from("$relatedTable AS r")
-                ->innerJoin($pivotTable, 'p')
-                ->on("p.$pivotForeignKey", "r.$relatedKey")
-                ->where("p.$pivotLocalKey", 'IN', new Parameter($chunk))
-                ->fetchAll();
-
-            foreach ($relatedRows as $row) {
-                $localId = $row[$pivotLocalKeyAlias];
-                unset($row[$pivotLocalKeyAlias]);
-                $grouped[$localId][] = $transform !== null ? $transform($row) : $row;
-            }
-        }
-
-        foreach ($results as $i => &$result) {
-            $localId = $rows[$i][$localKey] ?? null;
-            $result[$resultKey] = $localId !== null ? ($grouped[$localId] ?? []) : [];
-        }
+    private function relationLoader(): RelationLoader
+    {
+        return $this->relationLoader ??= new RelationLoader($this->db);
     }
 
     /**

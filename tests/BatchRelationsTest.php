@@ -15,6 +15,28 @@ use PHPUnit\Framework\TestCase;
 
 final class BatchRelationsTest extends TestCase
 {
+    public function testBelongsToPreservesCustomNamingAndRowSpecificTransformation(): void
+    {
+        $composition = (new ConfigFactory())->create(
+            new Environment(['DB_DRIVER' => 'sqlite', 'DB_NAME' => ':memory:']),
+            new ConfigProvider(),
+        );
+        $db = (new ContainerFactory())->create($composition->config, $composition->dependencies)
+            ->get(DatabaseManager::class)->database();
+        $db->execute('CREATE TABLE records (id INTEGER, owner_id INTEGER)');
+        $db->execute('CREATE TABLE owners (id INTEGER, name TEXT)');
+        $db->execute("INSERT INTO records VALUES (1, 7), (2, 7), (3, NULL)");
+        $db->execute("INSERT INTO owners VALUES (7, 'Alice')");
+
+        $fetcher = new CustomRelationNamingFetcher($db);
+        self::assertSame([
+            ['id' => 1, 'owner_id' => 7, 'custom_owner' => 'Alice'],
+            ['id' => 2, 'owner_id' => 7, 'custom_owner' => 'Alice'],
+            ['id' => 3, 'owner_id' => null, 'custom_owner' => null],
+        ], $fetcher());
+        self::assertSame(2, $fetcher->transformed);
+    }
+
     public function testLoadsAllRelationTypesAcrossLargeBatches(): void
     {
         $composition = (new ConfigFactory())->create(
@@ -79,5 +101,43 @@ final class BatchRecordsFetcher extends DataFetcher
         $this->batchBelongsTo($results, $rows, 'owner_id', 'owners');
         $this->batchHasMany($results, $rows, 'children', 'children', 'record_id');
         $this->batchBelongsToMany($results, $rows, 'tags', 'tags', 'record_tags', 'record_id', 'tag_id');
+    }
+}
+
+
+final class CustomRelationNamingFetcher extends DataFetcher
+{
+    protected bool $autoMapToCamelCase = false;
+    public int $transformed = 0;
+
+    public function __invoke(): array
+    {
+        return $this->doFetch();
+    }
+
+    protected function getTableName(): string
+    {
+        return 'records';
+    }
+
+    protected function select(?object $query): SelectQuery
+    {
+        return parent::select($query)->orderBy('id');
+    }
+
+    protected function snakeToCamel(string $string): string
+    {
+        return 'custom_' . $string;
+    }
+
+    protected function loadRelations(array &$results, array $rows, ?object $query): void
+    {
+        $this->batchBelongsTo(
+            $results, $rows, 'owner_id', 'owners', ['name'],
+            transform: function (array $row): string {
+                ++$this->transformed;
+                return $row['name'];
+            },
+        );
     }
 }
