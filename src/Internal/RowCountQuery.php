@@ -102,6 +102,8 @@ final readonly class RowCountQuery implements FragmentInterface
         ]);
         if ($this->after === null) {
             $tokens['orderBy'] = [];
+        } elseif ($this->source->getDriver()?->getType() === 'SQLServer' && $tokens['orderBy'] === []) {
+            $tokens['orderBy'] = [[PaginationOrder::fallback($tokens), null]];
         }
         if ($this->firstSelectOnly) {
             // Only the first arm defines the output width; TOP (0) must not leave a UNION arm running.

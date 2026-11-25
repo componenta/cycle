@@ -349,6 +349,30 @@ final class DataFetcherPaginationTest extends TestCase
         }
     }
 
+    public function testSqlServerUnorderedDistinctPagesKeepTheOriginalProjectionAndCardinality(): void
+    {
+        if (!in_array(getenv('CYCLE_TEST_DB_DRIVER'), ['sqlserver', 'mssql'], true)) {
+            self::markTestSkipped('Set CYCLE_TEST_DB_DRIVER=sqlserver to test unordered SQL Server pagination.');
+        }
+
+        $db = $this->database();
+        $source = $db->select('category')->from(new Fragment(
+            "(SELECT 'one' AS category UNION ALL SELECT 'one' UNION ALL SELECT 'two') AS items",
+        ))->distinct();
+        $fetcher = new PaginationFetcher($db, $source);
+
+        foreach ([new Page(1), new CountedPage(1)] as $query) {
+            $first = $fetcher($query);
+            self::assertSame([['category' => 'one']], $first->results);
+            self::assertTrue($first->hasNextPage);
+            self::assertSame($query instanceof CountedPage ? 2 : null, $first->totalCount);
+        }
+
+        $last = $fetcher(new Page(1, 1));
+        self::assertSame([['category' => 'two']], $last->results);
+        self::assertFalse($last->hasNextPage);
+    }
+
     private function database(): DatabaseInterface
     {
         $settings = ['DB_DRIVER' => 'sqlite', 'DB_NAME' => ':memory:'];

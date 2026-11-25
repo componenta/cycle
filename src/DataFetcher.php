@@ -7,6 +7,7 @@ namespace Componenta\Cycle;
 use Componenta\Caster\CasterProviderInterface;
 use Componenta\Cycle\Filter\OrderFilter;
 use Componenta\Cycle\Filter\PaginationFilter;
+use Componenta\Cycle\Internal\PaginationOrder;
 use Componenta\Cycle\Internal\RowCountQuery;
 use Componenta\Cycle\Internal\SqlIdentifier;
 use Componenta\Cycle\Query\PaginableInterface;
@@ -310,6 +311,9 @@ abstract class DataFetcher
      */
     protected function fetchResults(iterable $rows, ?int $count, ?object $query): iterable|Paginator
     {
+        if ($rows instanceof SelectQuery) {
+            $rows = PaginationOrder::forPage($rows);
+        }
         $results = [];
         $rawRows = [];
         $hasNextPage = null;
@@ -360,7 +364,7 @@ abstract class DataFetcher
      */
     protected function doFetch(?object $query = null): mixed
     {
-        $select = $this->select($query);
+        $select = PaginationOrder::forPage($this->select($query));
 
         if (!$query instanceof PaginableInterface) {
             return $this->fetchResults($select, null, $query);
