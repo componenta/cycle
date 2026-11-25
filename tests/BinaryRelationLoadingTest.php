@@ -17,14 +17,10 @@ use PHPUnit\Framework\TestCase;
 
 final class BinaryRelationLoadingTest extends TestCase
 {
-    public function testPostgresByteaKeysLoadAllThreeRelationTypes(): void
+    public function testBinaryKeysLoadAllThreeRelationTypes(): void
     {
-        if (getenv('CYCLE_TEST_DB_DRIVER') !== 'postgres') {
-            self::markTestSkipped('PostgreSQL bytea integration test.');
-        }
-
-        $settings = ['DB_DRIVER' => 'postgres'];
-        foreach (['NAME', 'HOST', 'PORT', 'USER', 'PASSWORD', 'SCHEMA'] as $key) {
+        $settings = ['DB_DRIVER' => 'sqlite', 'DB_NAME' => ':memory:'];
+        foreach (['DRIVER', 'NAME', 'HOST', 'PORT', 'USER', 'PASSWORD', 'SCHEMA', 'TRUST_SERVER_CERTIFICATE'] as $key) {
             $value = getenv('CYCLE_TEST_DB_' . $key);
             if ($value !== false) {
                 $settings['DB_' . $key] = $value;
@@ -39,21 +35,30 @@ final class BinaryRelationLoadingTest extends TestCase
         $owner = hex2bin('018f00ff0080700080ff000000000003');
         $tag = hex2bin('018f00ff0080700080ff000000000004');
         $repeated = hex2bin('018f00ff0080700080ff000000000005');
-        $lob = static fn (string $value): Parameter => new Parameter($value, \PDO::PARAM_LOB);
+        $type = match ($db->getType()) {
+            'Postgres' => 'BYTEA',
+            'MySQL' => 'BINARY(16)',
+            'SQLServer' => 'VARBINARY(16)',
+            default => 'BLOB',
+        };
+        $binary = static fn (string $value): string|Parameter => in_array($db->getType(), ['Postgres', 'SQLServer'], true)
+            ? new Parameter($value, \PDO::PARAM_LOB)
+            : $value;
+        $seq = static fn (int $value): int|string => $db->getType() === 'SQLServer' ? (string) $value : $value;
 
         try {
-            $db->execute('CREATE TABLE cycle_test_binary_roots (id BYTEA PRIMARY KEY, owner_id BYTEA, seq INTEGER)');
-            $db->execute('CREATE TABLE cycle_test_binary_owners (id BYTEA PRIMARY KEY, label VARCHAR(32))');
-            $db->execute('CREATE TABLE cycle_test_binary_children (parent_id BYTEA, label VARCHAR(32))');
-            $db->execute('CREATE TABLE cycle_test_binary_tags (id BYTEA PRIMARY KEY, label VARCHAR(32))');
-            $db->execute('CREATE TABLE cycle_test_binary_pivot (root_id BYTEA, tag_id BYTEA)');
+            $db->execute("CREATE TABLE cycle_test_binary_roots (id $type PRIMARY KEY, owner_id $type, seq INTEGER)");
+            $db->execute("CREATE TABLE cycle_test_binary_owners (id $type PRIMARY KEY, label VARCHAR(32))");
+            $db->execute("CREATE TABLE cycle_test_binary_children (parent_id $type, label VARCHAR(32))");
+            $db->execute("CREATE TABLE cycle_test_binary_tags (id $type PRIMARY KEY, label VARCHAR(32))");
+            $db->execute("CREATE TABLE cycle_test_binary_pivot (root_id $type, tag_id $type)");
             $db->execute('INSERT INTO cycle_test_binary_roots VALUES (?, ?, 1), (?, ?, 2)',
-                [$lob($root), $lob($owner), $lob($other), null]);
-            $db->execute('INSERT INTO cycle_test_binary_roots VALUES (?, ?, 3)', [$lob($repeated), $lob($owner)]);
-            $db->execute("INSERT INTO cycle_test_binary_owners VALUES (?, 'owner')", [$lob($owner)]);
-            $db->execute("INSERT INTO cycle_test_binary_children VALUES (?, 'child')", [$lob($root)]);
-            $db->execute("INSERT INTO cycle_test_binary_tags VALUES (?, 'tag')", [$lob($tag)]);
-            $db->execute('INSERT INTO cycle_test_binary_pivot VALUES (?, ?)', [$lob($root), $lob($tag)]);
+                [$binary($root), $binary($owner), $binary($other), null]);
+            $db->execute('INSERT INTO cycle_test_binary_roots VALUES (?, ?, 3)', [$binary($repeated), $binary($owner)]);
+            $db->execute("INSERT INTO cycle_test_binary_owners VALUES (?, 'owner')", [$binary($owner)]);
+            $db->execute("INSERT INTO cycle_test_binary_children VALUES (?, 'child')", [$binary($root)]);
+            $db->execute("INSERT INTO cycle_test_binary_tags VALUES (?, 'tag')", [$binary($tag)]);
+            $db->execute('INSERT INTO cycle_test_binary_pivot VALUES (?, ?)', [$binary($root), $binary($tag)]);
 
             $logger = new class extends \Psr\Log\AbstractLogger {
                 public int $reads = 0;
@@ -70,11 +75,11 @@ final class BinaryRelationLoadingTest extends TestCase
             $rows = (new BinaryRelationsFetcher($db))();
 
             self::assertSame([
-                ['id' => bin2hex($root), 'ownerId' => bin2hex($owner), 'seq' => 1,
+                ['id' => bin2hex($root), 'ownerId' => bin2hex($owner), 'seq' => $seq(1),
                     'owner' => 'owner', 'children' => ['child'], 'tags' => ['tag']],
-                ['id' => bin2hex($other), 'ownerId' => null, 'seq' => 2,
+                ['id' => bin2hex($other), 'ownerId' => null, 'seq' => $seq(2),
                     'owner' => null, 'children' => [], 'tags' => []],
-                ['id' => bin2hex($repeated), 'ownerId' => bin2hex($owner), 'seq' => 3,
+                ['id' => bin2hex($repeated), 'ownerId' => bin2hex($owner), 'seq' => $seq(3),
                     'owner' => 'owner', 'children' => [], 'tags' => []],
             ], $rows);
             self::assertSame(4, $logger->reads);
@@ -118,15 +123,20 @@ final class BinaryRelationsFetcher extends DataFetcher
     protected function loadRelations(array &$results, array $rows, ?object $query): void
     {
         $label = static fn (array $row): string => $row['label'];
+        $postgres = $this->db->getType() === 'Postgres';
         $this->batchBelongsTo($results, $rows, 'owner_id', 'cycle_test_binary_owners',
-            columns: ['label'], transform: static function (array $row): string {
+            columns: ['label'], transform: static function (array $row) use ($postgres): string {
                 $key = $row['id'];
-                TestCase::assertTrue(is_resource($key), 'Each invocation receives a live PostgreSQL bytea stream.');
-                TestCase::assertSame(0, ftell($key));
-                TestCase::assertSame(16, strlen(stream_get_contents($key)));
-                // The same database owner is transformed for two root rows.
-                // Closing a callback's stream must not invalidate the next row.
-                fclose($key);
+                if ($postgres) {
+                    TestCase::assertTrue(is_resource($key), 'Each invocation receives a live PostgreSQL bytea stream.');
+                    TestCase::assertSame(0, ftell($key));
+                    TestCase::assertSame(16, strlen(stream_get_contents($key)));
+                    // Closing a callback's stream must not invalidate the next row.
+                    fclose($key);
+                } else {
+                    TestCase::assertIsString($key);
+                    TestCase::assertSame(16, strlen($key));
+                }
                 return $row['label'];
             });
         $this->batchHasMany($results, $rows, 'children', 'cycle_test_binary_children', 'parent_id',
