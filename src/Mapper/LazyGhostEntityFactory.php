@@ -181,8 +181,9 @@ class LazyGhostEntityFactory
     public function extractData(RelationMap $relMap, object $entity): array
     {
         $result = [];
+        $class = $entity::class;
 
-        foreach ($this->getExtractableProperties($entity::class, $relMap) as $prop) {
+        foreach ($this->getExtractableProperties($class, $relMap) as $prop) {
             // isInitialized() itself can initialize a lazy object. A lazy
             // scalar that has never been written still has its declared default.
             if ($prop->isLazy($entity)) {
@@ -196,7 +197,8 @@ class LazyGhostEntityFactory
             }
         }
 
-        if ($this->supportsDynamicProperties($entity)) {
+        // Avoid a method call on the ordinary, already-known class path.
+        if ($this->dynamicPropertySupport[$class] ?? $this->allowsDynamicProperties($this->getReflection($class))) {
             $relations = $relMap->getRelations();
             foreach ($this->dynamicValues($entity) as $name => $value) {
                 if (!isset($relations[$name]) && !array_key_exists($name, $result)) {
