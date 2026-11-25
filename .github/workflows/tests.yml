@@ -156,8 +156,8 @@ jobs:
           exit 1
         env:
           CYCLE_TEST_DB_PASSWORD: CycleTest-2026!
-      - name: Run SQL Server pagination regression tests
-        run: composer test -- --filter testSqlServer
+      - name: Run the complete suite with SQL Server integration
+        run: composer test
         env:
           CYCLE_TEST_DB_DRIVER: sqlserver
           CYCLE_TEST_DB_NAME: master
