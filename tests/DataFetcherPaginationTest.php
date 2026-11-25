@@ -243,6 +243,26 @@ final class DataFetcherPaginationTest extends TestCase
         self::assertTrue($page->hasNextPage);
     }
 
+    public function testPostgresSetReturningProjectionPreservesNextPageAndTotal(): void
+    {
+        $db = $this->database();
+        if ($db->getType() !== 'Postgres') {
+            self::markTestSkipped('PostgreSQL set-returning select expressions are dialect-specific.');
+        }
+
+        $source = $db->select(new Fragment('generate_series(1, id) AS value'))
+            ->from(new Fragment('(SELECT 3 AS id) AS items'));
+        $fetcher = new PaginationFetcher($db, $source);
+
+        foreach ([new Page(1), new CountedPage(1)] as $query) {
+            $first = $fetcher($query);
+            self::assertSame([['value' => 1]], $first->results);
+            self::assertTrue($first->hasNextPage);
+            self::assertSame($query instanceof CountedPage ? 3 : null, $first->totalCount);
+        }
+        self::assertFalse($fetcher(new Page(1, 2))->hasNextPage);
+    }
+
     public function testDatabaseManagerPreservesBoundUnionParametersAcrossRepeatedReads(): void
     {
         $db = $this->database();
@@ -300,6 +320,11 @@ final class DataFetcherPaginationTest extends TestCase
         $db = $this->database();
         $integerType = $db->getType() === 'MySQL' ? 'SIGNED' : 'BIGINT';
         $expression = "abs(CASE WHEN id < 3 THEN id ELSE CAST('-9223372036854775808' AS {$integerType}) END)";
+        if ($distinct && $db->getType() === 'Postgres') {
+            // DISTINCT may require evaluating all projected rows before LIMIT.
+            // PostgreSQL does not promise SQLite/MySQL's short-circuit behavior.
+            self::markTestSkipped('PostgreSQL DISTINCT may evaluate the full projection before LIMIT.');
+        }
         $source = $db->select(new Fragment($distinct ? $expression . ' AS value' : 'id AS value'))
             ->from(new Fragment('(SELECT 1 AS id UNION ALL SELECT 2 UNION ALL SELECT 3) AS items'));
         if ($distinct) {

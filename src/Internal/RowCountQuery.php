@@ -28,15 +28,29 @@ final readonly class RowCountQuery implements FragmentInterface
     {
         $driver = $this->source->getDriver()
             ?? throw new BuilderException('Unable to build query without associated driver');
-        $parameters = new QueryParameters();
-        $sql = $driver->getQueryCompiler()->compile($parameters, $this->source->getPrefix() ?? '', $this);
-        $bindings = $parameters->getParameters();
-        $columns = '';
         $tokens = $this->getTokens();
         // EXISTS may discard projected fields. Grouping and set operations need their result cardinality.
         $directExistence = $this->after !== null
             && !$tokens['distinct'] && $tokens['groupBy'] === [] && $tokens['having'] === []
             && $tokens['union'] === [] && $tokens['intersect'] === [] && $tokens['except'] === [];
+
+        // PostgreSQL evaluates the target list of an EXISTS subquery with
+        // OFFSET. Apply the offset outside the source so unused scalar
+        // expressions can be pruned while aggregate and set-returning
+        // projections still determine the number of rows.
+        $postgresProbe = $directExistence && $driver->getType() === 'Postgres';
+        $parameters = new QueryParameters();
+        $sql = $driver->getQueryCompiler()->compile(
+            $parameters,
+            $this->source->getPrefix() ?? '',
+            $postgresProbe ? new self($this->source) : $this,
+        );
+        $bindings = $parameters->getParameters();
+        if ($postgresProbe) {
+            // The offset is an integer computed by DataFetcher, not SQL input.
+            $sql = "SELECT 1 FROM (\n" . $sql . "\n) AS _componenta_probe LIMIT 1 OFFSET " . $this->after;
+        }
+        $columns = '';
 
         if (!$directExistence && in_array($driver->getType(), ['MySQL', 'SQLServer'], true)) {
             // Describe every output column, including stars and duplicate names, without reading rows.
