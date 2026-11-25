@@ -16,6 +16,8 @@ jobs:
         php: ['8.4', '8.5']
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
       - uses: shivammathur/setup-php@v2
         with:
           php-version: ${{ matrix.php }}
@@ -26,6 +28,19 @@ jobs:
       - run: composer install --no-interaction --prefer-dist
       - run: find src tests -name '*.php' -print0 | xargs -0 -n1 php -l
       - run: composer test
+      - name: Recheck all hot-path benchmarks against the last performance baseline
+        if: matrix.php == '8.5'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/cycle-before"
+          git archive 3db46076af22101df6fbf3fe0ef1445b39796929 src | tar -x -C "$RUNNER_TEMP/cycle-before"
+          for scenario in data-fetcher orm-hydration; do
+            echo "Before: $scenario"
+            CYCLE_BENCH_SOURCE_ROOT="$RUNNER_TEMP/cycle-before/src" php "benchmarks/$scenario.php"
+            echo "After: $scenario"
+            php "benchmarks/$scenario.php"
+          done
 
   lowest-dependencies:
     runs-on: ubuntu-latest
