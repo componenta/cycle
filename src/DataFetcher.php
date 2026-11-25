@@ -363,7 +363,8 @@ abstract class DataFetcher
     /**
      * Check if a specific relation is requested via $query->with.
      *
-     * Expects $query->with to be a comma-separated string (e.g. "tags,category").
+     * Accepts a public optional with property containing a comma-separated
+     * string (e.g. "tags,category") or an array of relation names.
      */
     protected function wantsRelation(?object $query, string $name): bool
     {
@@ -381,7 +382,7 @@ abstract class DataFetcher
             return [];
         }
 
-        $with = $query->with;
+        $with = $query->with ?? null;
 
         if ($with === null || $with === '') {
             return [];

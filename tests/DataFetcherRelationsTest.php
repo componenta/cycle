@@ -31,6 +31,9 @@ final class DataFetcherRelationsTest extends TestCase
         self::assertSame([['id' => 1, 'relations' => ['category']]], $fetcher($query));
         $query->with = null;
         self::assertSame([['id' => 1, 'relations' => []]], $fetcher($query));
+        self::assertSame([['id' => 1, 'relations' => []]], $fetcher(new class { public ?string $with; }));
+        self::assertSame([['id' => 1, 'relations' => []]], $fetcher(new class { private string $with = 'tags'; }));
+        self::assertSame([['id' => 1, 'relations' => []]], $fetcher(new \stdClass()));
     }
 }
 
