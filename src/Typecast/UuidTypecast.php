@@ -64,7 +64,9 @@ final class UuidTypecast implements CastableInterface, UncastableInterface
                     }
                     $data[$column] = $this->factory->fromBytes(hex2bin($hex));
                 } else {
-                    $data[$column] = Uuid::fromString($value);
+                    // Parse with the canonical parser, then use the injected
+                    // factory just as for the other database representations.
+                    $data[$column] = $this->factory->fromBytes(Uuid::fromString($value)->bytes);
                 }
             }
         }

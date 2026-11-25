@@ -7,6 +7,7 @@ namespace Componenta\Cycle\Tests;
 use Componenta\Cycle\Typecast\UuidTypecast;
 use Componenta\Identity\Uuid;
 use Componenta\Identity\UuidFactory;
+use Componenta\Identity\UuidFactoryInterface;
 use PHPUnit\Framework\TestCase;
 
 final class UuidTypecastTest extends TestCase
@@ -25,6 +26,28 @@ final class UuidTypecastTest extends TestCase
                 $uuid = $typecast->cast(['id' => $value])['id'];
                 self::assertSame($text, $uuid->toString());
                 self::assertSame(['id' => $bytes], $typecast->uncast(['id' => $uuid]));
+            }
+        } finally {
+            fclose($stream);
+        }
+    }
+
+    public function testUsesTheInjectedFactoryForEveryDatabaseRepresentation(): void
+    {
+        $text = '018f0000-0000-7000-8000-000000000001';
+        $expected = Uuid::fromString($text);
+        $factory = $this->createMock(UuidFactoryInterface::class);
+        $factory->expects(self::exactly(4))->method('fromBytes')->with($expected->bytes)->willReturn($expected);
+
+        $typecast = new UuidTypecast($factory);
+        $typecast->setRules(['id' => 'uuid']);
+
+        $stream = fopen('php://memory', 'r+');
+        fwrite($stream, $text);
+        rewind($stream);
+        try {
+            foreach ([$expected->bytes, $text, '\\x' . bin2hex($expected->bytes), $stream] as $value) {
+                self::assertSame($expected, $typecast->cast(['id' => $value])['id']);
             }
         } finally {
             fclose($stream);
