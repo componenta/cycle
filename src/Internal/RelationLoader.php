@@ -44,9 +44,9 @@ final readonly class RelationLoader
             return;
         }
 
-        [$ids, , $hasRepeatedKeys] = $this->collectIds($rows, $foreignKey, $binaryKey);
+        [$groups, , $hasRepeatedKeys] = $this->collectIds($rows, $foreignKey, $binaryKey);
 
-        if ($ids === []) {
+        if ($groups === []) {
             foreach ($results as &$result) {
                 $result[$key] = null;
             }
@@ -61,7 +61,7 @@ final readonly class RelationLoader
 
         // Index by table key
         $indexed = [];
-        foreach (array_chunk($ids, self::BATCH_SIZE) as $chunk) {
+        foreach (self::chunks($groups) as $prefix => $chunk) {
             $relatedRows = $this->db
                 ->select($selectColumns)
                 ->from($table)
@@ -70,10 +70,14 @@ final readonly class RelationLoader
 
             foreach ($relatedRows as $row) {
                 $id = $row[$tableKey];
-                $indexed[is_resource($id) ? self::streamKey($id) : $id] = $row;
+                if (is_resource($id)) {
+                    $id = self::streamKey($id);
+                }
+                $indexed[$prefix === '' ? $id : $prefix . $id] = $row;
             }
         }
 
+        $typed = count($groups) > 1;
         $streamRows = [];
         if ($hasRepeatedKeys && $transform !== null) {
             // Inspect each distinct related row once, not once per parent.
@@ -91,6 +95,9 @@ final readonly class RelationLoader
             $fk = $rows[$i][$foreignKey] ?? null;
             if (is_resource($fk)) {
                 $fk = self::streamKey($fk);
+            }
+            if ($typed && $fk !== null) {
+                $fk = self::keyPrefix($fk) . $fk;
             }
             $related = $fk !== null ? ($indexed[$fk] ?? null) : null;
             if ($related !== null && $transform !== null) {
@@ -126,9 +133,9 @@ final readonly class RelationLoader
             return;
         }
 
-        [$ids] = $this->collectIds($rows, $localKey, $binaryKey);
+        [$groups] = $this->collectIds($rows, $localKey, $binaryKey);
 
-        if ($ids === []) {
+        if ($groups === []) {
             foreach ($results as &$result) {
                 $result[$resultKey] = [];
             }
@@ -143,7 +150,7 @@ final readonly class RelationLoader
 
         // Group by foreign key
         $grouped = [];
-        foreach (array_chunk($ids, self::BATCH_SIZE) as $chunk) {
+        foreach (self::chunks($groups) as $prefix => $chunk) {
             $relatedRows = $this->db
                 ->select($selectColumns)
                 ->from($table)
@@ -152,14 +159,21 @@ final readonly class RelationLoader
 
             foreach ($relatedRows as $row) {
                 $id = $row[$foreignKey];
-                $grouped[is_resource($id) ? self::streamKey($id) : $id][] = $transform !== null ? $transform($row) : $row;
+                if (is_resource($id)) {
+                    $id = self::streamKey($id);
+                }
+                $grouped[$prefix === '' ? $id : $prefix . $id][] = $transform !== null ? $transform($row) : $row;
             }
         }
 
+        $typed = count($groups) > 1;
         foreach ($results as $i => &$result) {
             $localId = $rows[$i][$localKey] ?? null;
             if (is_resource($localId)) {
                 $localId = self::streamKey($localId);
+            }
+            if ($typed && $localId !== null) {
+                $localId = self::keyPrefix($localId) . $localId;
             }
             $result[$resultKey] = $localId !== null ? ($grouped[$localId] ?? []) : [];
         }
@@ -190,9 +204,9 @@ final readonly class RelationLoader
             return;
         }
 
-        [$ids, $binary] = $this->collectIds($rows, $localKey, $binaryKey);
+        [$groups, $binary] = $this->collectIds($rows, $localKey, $binaryKey);
 
-        if ($ids === []) {
+        if ($groups === []) {
             foreach ($results as &$result) {
                 $result[$resultKey] = [];
             }
@@ -217,8 +231,8 @@ final readonly class RelationLoader
         ];
 
         $grouped = [];
-        foreach (array_chunk($ids, self::BATCH_SIZE) as $chunk) {
-            $groups = $this->db
+        foreach (self::chunks($groups) as $prefix => $chunk) {
+            $relatedGroups = $this->db
                 ->select($selectColumns)
                 ->from("$relatedTable AS r")
                 ->innerJoin($pivotTable, 'p')
@@ -226,7 +240,10 @@ final readonly class RelationLoader
                 ->where("p.$pivotLocalKey", 'IN', new Parameter($chunk))
                 ->fetchAll(\PDO::FETCH_GROUP | \PDO::FETCH_ASSOC);
 
-            foreach ($groups as $localId => $relatedRows) {
+            foreach ($relatedGroups as $localId => $relatedRows) {
+                if ($prefix !== '') {
+                    $localId = $prefix . $localId;
+                }
                 if ($transform !== null) {
                     $relatedRows = array_map($transform, $relatedRows);
                 }
@@ -241,10 +258,14 @@ final readonly class RelationLoader
             }
         }
 
+        $typed = count($groups) > 1;
         foreach ($results as $i => &$result) {
             $localId = $rows[$i][$localKey] ?? null;
             if (is_resource($localId)) {
                 $localId = self::streamKey($localId);
+            }
+            if ($typed && $localId !== null) {
+                $localId = self::keyPrefix($localId) . $localId;
             }
             if ($hexGroupKey && $localId !== null) {
                 $localId = bin2hex($localId);
@@ -254,7 +275,7 @@ final readonly class RelationLoader
     }
 
     /**
-     * @return array{0: list<mixed>, 1: bool, 2: bool}
+     * @return array{0: array<string, list<string|Parameter>>, 1: bool, 2: bool}
      */
     private function collectIds(array $rows, string $column, bool $binary): array
     {
@@ -271,27 +292,94 @@ final readonly class RelationLoader
             }
             $ids[] = $id;
         }
-        $count = count($ids);
-        $ids = array_values(array_unique($ids));
-        $hasRepeatedKeys = count($ids) !== $count;
+        if ($ids === []) {
+            return [[], $binary, false];
+        }
 
+        $count = count($ids);
+        $unique = array_values(array_unique($ids));
+        $hasRepeatedKeys = count($unique) !== $count;
+
+        // PHP array keys and array_unique collapse canonical numeric strings
+        // into integers. SQLite can store those as distinct keys in columns
+        // without affinity. Only split when that ambiguity actually occurs.
+        if (!$binary && $hasRepeatedKeys && $this->db->getType() === 'SQLite'
+            && self::hasAmbiguousKeys($ids)
+        ) {
+            $parts = [];
+            foreach ($ids as $id) {
+                $parts[self::keyPrefix($id)][] = $id;
+            }
+            $uniqueCount = 0;
+            foreach ($parts as &$part) {
+                $part = array_values(array_unique($part));
+                $uniqueCount += count($part);
+                $part = self::bindIds($part, false);
+            }
+            unset($part);
+
+            return [$parts, false, $uniqueCount !== $count];
+        }
+
+        return [['' => self::bindIds($unique, $binary)], $binary, $hasRepeatedKeys];
+    }
+
+    /** @return list<string|Parameter> */
+    private static function bindIds(array $ids, bool $binary): array
+    {
         // DBAL flattens IN lists; raw values default to PDO::PARAM_STR.
-        // Preserve each non-string value's type as well as explicit binary keys.
         if ($binary) {
-            $ids = array_map(static function (mixed $id): Parameter {
+            return array_map(static function (mixed $id): Parameter {
                 if (!is_string($id)) {
                     throw new InvalidArgumentException('A binary relation key must be a string or a seekable stream.');
                 }
                 return new Parameter($id, PDO::PARAM_LOB);
             }, $ids);
-        } else {
-            $ids = array_map(
-                static fn (mixed $id): string|Parameter => is_string($id) ? $id : new Parameter($id),
-                $ids,
-            );
         }
 
-        return [$ids, $binary, $hasRepeatedKeys];
+        return array_map(
+            static fn (mixed $id): string|Parameter => is_string($id) ? $id : new Parameter($id),
+            $ids,
+        );
+    }
+
+    private static function hasAmbiguousKeys(array $ids): bool
+    {
+        $firstIsInteger = is_int($ids[0]);
+        foreach ($ids as $id) {
+            if (is_int($id) !== $firstIsInteger) {
+                // Avoid allocating another map for homogeneous repeated keys.
+                $types = [];
+                foreach ($ids as $value) {
+                    if (!is_int($value) && !is_string($value)) {
+                        continue;
+                    }
+                    $integer = is_int($value);
+                    if (isset($types[$value]) && $types[$value] !== $integer) {
+                        return true;
+                    }
+                    $types[$value] = $integer;
+                }
+                return false;
+            }
+        }
+
+        return false;
+    }
+
+    private static function keyPrefix(mixed $key): string
+    {
+        return is_int($key) ? 'i:' : 's:';
+    }
+
+    /** @return \Generator<string, list<string|Parameter>> */
+    private static function chunks(array $groups): \Generator
+    {
+        foreach ($groups as $prefix => $ids) {
+            foreach (array_chunk($ids, self::BATCH_SIZE) as $chunk) {
+                yield $prefix => $chunk;
+            }
+        }
     }
 
     /** @param array<string, mixed> $row */
