@@ -148,6 +148,47 @@ it('preserves the storage type of integer keys in all batched relations', functi
     expect($logger->queries)->toHaveCount(4);
 });
 
+it('does not merge distinct integer and text relation keys in SQLite', function (): void {
+    $composition = (new ConfigFactory())->create(
+        new Environment(['DB_DRIVER' => 'sqlite', 'DB_NAME' => ':memory:']),
+        new ConfigProvider(),
+    );
+    $db = (new ContainerFactory())->create($composition->config, $composition->dependencies)
+        ->get(DatabaseManager::class)->database();
+
+    // SQLite's affinity-free columns distinguish the integer 1 from the text '1'.
+    $db->execute('CREATE TABLE records (id, owner_id)');
+    $db->execute('CREATE TABLE owners (id, label TEXT)');
+    $db->execute('CREATE TABLE children (id, record_id)');
+    $db->execute('CREATE TABLE tags (id)');
+    $db->execute('CREATE TABLE record_tags (record_id, tag_id)');
+    $db->execute("INSERT INTO records VALUES (1, 7), ('1', '7')");
+    $db->execute("INSERT INTO owners VALUES (7, 'numeric'), ('7', 'text')");
+    $db->execute("INSERT INTO children VALUES (8, 1), (9, '1')");
+    $db->execute('INSERT INTO tags VALUES (10), (11)');
+    $db->execute("INSERT INTO record_tags VALUES (1, 10), ('1', 11)");
+
+    $logger = new RelationQueryLogger();
+    $db->getDriver(DatabaseInterface::READ)->setLogger($logger);
+
+    expect((new BatchRecordsFetcher($db))())->toBe([
+        [
+            'id' => 1, 'ownerId' => 7,
+            'owner' => ['id' => 7, 'label' => 'numeric'],
+            'children' => [['id' => 8, 'record_id' => 1]],
+            'tags' => [['id' => 10]],
+        ],
+        [
+            'id' => '1', 'ownerId' => '7',
+            'owner' => ['id' => '7', 'label' => 'text'],
+            'children' => [['id' => 9, 'record_id' => '1']],
+            'tags' => [['id' => 11]],
+        ],
+    ]);
+    // At most two bounded batches per relation, never a query per row.
+    expect(count($logger->queries))->toBeLessThanOrEqual(7);
+});
+
 final class BatchRecordsFetcher extends DataFetcher
 {
     public function __invoke(): array
