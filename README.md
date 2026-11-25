@@ -95,3 +95,5 @@ Pagination tests use SQLite in memory by default. To run the same public-contrac
 ## Boundaries
 
 `componenta/cycle` contains runtime database behavior. Filesystem scanning, attribute discovery, schema console commands, and compile integration belong to `componenta/cycle-app`.
+
+Application-specific typecast handlers are opt-in: set `ConfigKey::ROOT => [ConfigKey::TYPECAST_HANDLERS => [CustomTypecast::class]]` in the application configuration. The default chain includes UUID, Carbon, enum and Cycle's native typecast. Projects that previously relied on the implicit `App\\Cycle\\Typecast` handlers must register their own classes explicitly. Use role-local handler instances for handlers with mutable rules.

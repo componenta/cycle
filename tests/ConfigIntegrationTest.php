@@ -9,14 +9,16 @@ use Componenta\DI\ContainerFactory;
 use Cycle\Database\DatabaseManager;
 use Cycle\Migrations\Config\MigrationConfig;
 use Cycle\ORM\SchemaInterface;
+use Cycle\ORM\Parser\CastableInterface;
+use Cycle\ORM\ORMInterface;
 use PHPUnit\Framework\TestCase;
 
 final class ConfigIntegrationTest extends TestCase {
-    private function container(): \Componenta\Config\ContainerValue {
+    private function container(array $additionalConfig = []): \Componenta\Config\ContainerValue {
         $composition = (new ConfigFactory())->create(
             new Environment(['DB_DRIVER' => 'sqlite', 'DB_NAME' => ':memory:']),
             new ConfigProvider(),
-            static fn (): array => [ConfigKey::ROOT => [ConfigKey::MIGRATIONS => ['namespace' => 'ExampleMigrations']]],
+            static fn (): array => [ConfigKey::ROOT => [ConfigKey::MIGRATIONS => ['namespace' => 'ExampleMigrations'], ...$additionalConfig]],
         );
         return (new ContainerFactory())->create($composition->config, $composition->dependencies);
     }
@@ -29,5 +31,59 @@ final class ConfigIntegrationTest extends TestCase {
         $container = $this->container();
         self::assertSame([], iterator_to_array($container->get(SchemaInterface::class)->getRoles()));
         self::assertSame('ExampleMigrations', $container->get(MigrationConfig::class)->getNamespace());
+    }
+
+    public function testCreatesDefaultTypecastsWithoutApplicationClasses(): void
+    {
+        $container = $this->container();
+        $orm = $container->get(ORMInterface::class);
+        $database = $container->get(DatabaseManager::class)->database();
+        $schema = new \Cycle\ORM\Schema([
+            'record' => [SchemaInterface::ENTITY => \stdClass::class, SchemaInterface::TYPECAST => ['created' => 'carbon']],
+        ]);
+
+        $handler = $orm->getFactory()->typecast($schema, $database, 'record');
+        self::assertInstanceOf(CastableInterface::class, $handler);
+        self::assertInstanceOf(\Carbon\CarbonImmutable::class, $handler->cast(['created' => '2026-11-25 12:00:00'])['created']);
+    }
+
+    public function testApplicationCanRegisterAdditionalTypecastHandlers(): void
+    {
+        $container = $this->container([ConfigKey::TYPECAST_HANDLERS => [ExampleTypecast::class]]);
+        $orm = $container->get(ORMInterface::class);
+        $database = $container->get(DatabaseManager::class)->database();
+        $schema = new \Cycle\ORM\Schema([
+            'record' => [SchemaInterface::ENTITY => \stdClass::class, SchemaInterface::TYPECAST => ['name' => 'example']],
+        ]);
+
+        $handler = $orm->getFactory()->typecast($schema, $database, 'record');
+        self::assertInstanceOf(CastableInterface::class, $handler);
+        self::assertSame(['name' => 'EXAMPLE'], $handler->cast(['name' => 'example']));
+    }
+}
+
+final class ExampleTypecast implements CastableInterface
+{
+    private array $columns = [];
+
+    public function setRules(array $rules): array
+    {
+        foreach ($rules as $name => $rule) {
+            if ($rule === 'example') {
+                $this->columns[] = $name;
+                unset($rules[$name]);
+            }
+        }
+        return $rules;
+    }
+
+    public function cast(array $data): array
+    {
+        foreach ($this->columns as $name) {
+            if (isset($data[$name])) {
+                $data[$name] = strtoupper($data[$name]);
+            }
+        }
+        return $data;
     }
 }

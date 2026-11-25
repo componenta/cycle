@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 namespace Componenta\Cycle;
 
 final class ConfigKey extends \Componenta\Config\ConfigKey
@@ -16,6 +18,8 @@ final class ConfigKey extends \Componenta\Config\ConfigKey
 
     // Schema
     public const string SCHEMA = 'Componenta\Cycle::schema';
+
+    public const string TYPECAST_HANDLERS = 'Componenta\Cycle::typecast_handlers';
 
     // Migrations
     public const string MIGRATIONS = 'Componenta\Cycle::migrations';

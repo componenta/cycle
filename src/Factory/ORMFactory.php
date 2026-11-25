@@ -4,9 +4,10 @@ declare(strict_types=1);
 
 namespace Componenta\Cycle\Factory;
 
+use Componenta\Config\Config;
+use Componenta\Cycle\ConfigKey;
 use Componenta\Cycle\Mapper\LazyGhostMapper;
-use App\Cycle\Typecast\EmailTypecast;
-use App\Cycle\Typecast\PhoneTypecast;
+use Componenta\Cycle\Typecast\CarbonTypecast;
 use Componenta\Cycle\Typecast\EnumTypecast;
 use Componenta\Cycle\Typecast\UuidTypecast;
 use Componenta\DI\LazyServiceFactoryInterface;
@@ -17,6 +18,7 @@ use Cycle\ORM\Collection\CollectionFactoryInterface;
 use Cycle\ORM\Factory;
 use Cycle\ORM\ORM;
 use Cycle\ORM\Parser\Typecast;
+use Cycle\ORM\Parser\TypecastInterface;
 use Cycle\ORM\SchemaInterface;
 use Psr\Container\ContainerInterface;
 use Spiral\Core\FactoryInterface as CoreFactory;
@@ -29,6 +31,18 @@ final class ORMFactory implements LazyServiceFactoryInterface
             ? $container->get(CollectionFactoryInterface::class)
             : new ArrayCollectionFactory();
 
+        $additionalTypecasts = $container->has(Config::class)
+            ? ($container->get(Config::class)->array(ConfigKey::ROOT, [])[ConfigKey::TYPECAST_HANDLERS] ?? [])
+            : [];
+        if (!is_array($additionalTypecasts) || !array_is_list($additionalTypecasts)) {
+            throw new \InvalidArgumentException('Cycle typecast handlers must be a list of class names.');
+        }
+        foreach ($additionalTypecasts as $handler) {
+            if (!is_string($handler) || !is_subclass_of($handler, TypecastInterface::class)) {
+                throw new \InvalidArgumentException('Invalid Cycle typecast handler class.');
+            }
+        }
+
         $factory = new Factory(
             dbal: $container->get(DatabaseManager::class),
             factory: $container->get(CoreFactory::class),
@@ -37,8 +51,8 @@ final class ORMFactory implements LazyServiceFactoryInterface
             SchemaInterface::MAPPER => LazyGhostMapper::class,
             SchemaInterface::TYPECAST_HANDLER => [
                 UuidTypecast::class,
-                EmailTypecast::class,
-                PhoneTypecast::class,
+                ...$additionalTypecasts,
+                CarbonTypecast::class,
                 EnumTypecast::class,
                 Typecast::class,
             ],
