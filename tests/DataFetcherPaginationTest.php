@@ -112,11 +112,12 @@ final class DataFetcherPaginationTest extends TestCase
         $fetcher = new ResultTransformingPaginationFetcher($db, $source, true);
         $query = new Page(1);
 
-        $fetcher->beforeResults = static function (object $current) use ($fetcher, $single, $query): void {
+        $expected = self::driverRows($db, [['id' => 9]]);
+        $fetcher->beforeResults = static function (object $current) use ($fetcher, $single, $query, $expected): void {
             self::assertSame($query, $current);
             $cloned = clone $fetcher;
             $page = $cloned->fetchDirect($single, $query);
-            self::assertSame([['id' => 9]], $page->results);
+            self::assertSame($expected, $page->results);
             self::assertFalse($page->hasNextPage);
         };
 
@@ -163,7 +164,7 @@ final class DataFetcherPaginationTest extends TestCase
         $fetcher = new PaginationFetcher($db, $select);
 
         $page = $fetcher(new CountedPage());
-        self::assertSame([['category' => 'one', 'quantity' => 2]], $page->results);
+        self::assertSame(self::driverRows($db, [['category' => 'one', 'quantity' => 2]]), $page->results);
         self::assertSame(1, $page->totalCount);
         $select->having(new Fragment('COUNT(*)'), '>', 3);
         $empty = $fetcher(new CountedPage());
@@ -177,9 +178,9 @@ final class DataFetcherPaginationTest extends TestCase
         $fetcher = new PaginationFetcher($db, $db->select('id', '_row_count')
             ->from(new Fragment('(SELECT 1 AS id, 73 AS _row_count) AS items')));
 
-        self::assertSame([['id' => 1, '_row_count' => 73]], $fetcher(new Page())->results);
+        self::assertSame(self::driverRows($db, [['id' => 1, '_row_count' => 73]]), $fetcher(new Page())->results);
         $page = $fetcher(new CountedPage());
-        self::assertSame([['id' => 1, '_row_count' => 73]], $page->results);
+        self::assertSame(self::driverRows($db, [['id' => 1, '_row_count' => 73]]), $page->results);
         self::assertSame(1, $page->totalCount);
     }
 
@@ -187,12 +188,17 @@ final class DataFetcherPaginationTest extends TestCase
     public function testTotalCountAcceptsDuplicateOutputColumnNames(array $columns): void
     {
         $db = $this->database();
-        $fetcher = new PaginationFetcher($db, $db->select($columns)
-            ->from(new Fragment('(SELECT 1 AS id) AS a, (SELECT 2 AS id) AS b')));
+        $source = $db->select($columns)->from(new Fragment('(SELECT 1 AS id) AS a, (SELECT 2 AS id) AS b'));
+        // PDO does not guarantee which duplicate name survives associative fetching.
+        $expected = $source->fetchAll();
+        self::assertCount(1, $expected);
+        self::assertSame(['id'], array_keys($expected[0]));
+        self::assertContains($expected[0]['id'], [$db->getType() === 'SQLServer' ? '1' : 1, $db->getType() === 'SQLServer' ? '2' : 2]);
+        $fetcher = new PaginationFetcher($db, $source);
 
-        self::assertSame([['id' => 2]], $fetcher(new Page())->results);
+        self::assertSame($expected, $fetcher(new Page())->results);
         $page = $fetcher(new CountedPage());
-        self::assertSame([['id' => 2]], $page->results);
+        self::assertSame($expected, $page->results);
         self::assertSame(1, $page->totalCount);
     }
 
@@ -215,7 +221,7 @@ final class DataFetcherPaginationTest extends TestCase
         $fetcher = new PaginationFetcher($db, $source);
         foreach ([new Page(1, $offset), new CountedPage(1, $offset)] as $query) {
             $page = $fetcher($query);
-            self::assertSame($expected, $page->results);
+            self::assertSame(self::driverRows($db, $expected), $page->results);
             self::assertSame($query instanceof CountedPage ? 1 : null, $page->totalCount);
             self::assertFalse($page->hasNextPage);
         }
@@ -241,10 +247,10 @@ final class DataFetcherPaginationTest extends TestCase
         $fetcher = new PaginationFetcher($db, $source);
 
         $first = $fetcher(new CountedPage(1));
-        self::assertSame([['id' => 2]], $first->results);
+        self::assertSame(self::driverRows($db, [['id' => 2]]), $first->results);
         self::assertSame(2, $first->totalCount);
         $second = $fetcher(new CountedPage(1, 1));
-        self::assertSame([['id' => 3]], $second->results);
+        self::assertSame(self::driverRows($db, [['id' => 3]]), $second->results);
         self::assertSame(2, $second->totalCount);
     }
 
@@ -259,10 +265,10 @@ final class DataFetcherPaginationTest extends TestCase
         )));
 
         $page = $fetcher(new CountedPage(1));
-        self::assertSame([['value' => 1]], $page->results);
+        self::assertSame(self::driverRows($db, [['value' => 1]]), $page->results);
         self::assertSame(4, $page->totalCount);
         $page = $fetcher(new Page(1));
-        self::assertSame([['value' => 1]], $page->results);
+        self::assertSame(self::driverRows($db, [['value' => 1]]), $page->results);
         self::assertNull($page->totalCount);
         self::assertTrue($page->hasNextPage);
     }
@@ -280,7 +286,7 @@ final class DataFetcherPaginationTest extends TestCase
 
         foreach ([new Page(1), new CountedPage(1)] as $query) {
             $first = $fetcher($query);
-            self::assertSame([['value' => 1]], $first->results);
+            self::assertSame(self::driverRows($db, [['value' => 1]]), $first->results);
             self::assertTrue($first->hasNextPage);
             self::assertSame($query instanceof CountedPage ? 3 : null, $first->totalCount);
         }
@@ -298,11 +304,11 @@ final class DataFetcherPaginationTest extends TestCase
                     'SELECT id FROM (SELECT 3 AS id UNION ALL SELECT 4) AS second_items WHERE id < ?',
                     $upperBound,
                 ))->orderBy('id');
-            self::assertSame([['id' => 3]], (clone $source)->limit(1)->offset(1)->fetchAll());
+            self::assertSame(self::driverRows($db, [['id' => 3]]), (clone $source)->limit(1)->offset(1)->fetchAll());
             $fetcher = new PaginationFetcher($db, $source);
             foreach ([new Page(1, 1), new CountedPage(1, 1)] as $query) {
                 $page = $fetcher($query);
-                self::assertSame([['id' => 3]], $page->results);
+                self::assertSame(self::driverRows($db, [['id' => 3]]), $page->results);
                 self::assertSame($hasNext, $page->hasNextPage);
                 self::assertSame($query instanceof CountedPage ? $total : null, $page->totalCount);
             }
@@ -362,11 +368,18 @@ final class DataFetcherPaginationTest extends TestCase
             $source->where(new Fragment($expression), '>', 0);
         }
 
-        self::assertSame([['value' => 1], ['value' => 2]], (clone $source)->limit(2)->fetchAll());
+        $raw = (clone $source)->limit(2)->fetchAll();
+        // The bare DBAL may append its SQL Server fallback row-number column.
+        // Verify the precondition without requiring DataFetcher's projection
+        // preservation from the lower-level query builder.
+        self::assertSame(
+            array_column(self::driverRows($db, [['value' => 1], ['value' => 2]]), 'value'),
+            array_column($raw, 'value'),
+        );
 
         $page = (new PaginationFetcher($db, $source))(new Page(1));
 
-        self::assertSame([['value' => 1]], $page->results);
+        self::assertSame(self::driverRows($db, [['value' => 1]]), $page->results);
         self::assertTrue($page->hasNextPage);
         self::assertNull($page->totalCount);
     }
@@ -388,11 +401,11 @@ final class DataFetcherPaginationTest extends TestCase
             ->unionAll($db->select('id')
                 ->from(new Fragment('(SELECT 3 AS id UNION ALL SELECT 4) AS second_items'))->where('id', '<', 4))
             ->orderBy('id');
-        self::assertSame([['id' => 2]], (clone $source)->limit(1)->offset(0)->fetchAll());
+        self::assertSame(self::driverRows($db, [['id' => 2]]), (clone $source)->limit(1)->offset(0)->fetchAll());
         $fetcher = new PaginationFetcher($db, $source);
         foreach ([new Page(1), new CountedPage(1)] as $query) {
             $page = $fetcher($query);
-            self::assertSame([['id' => 2]], $page->results);
+            self::assertSame(self::driverRows($db, [['id' => 2]]), $page->results);
             self::assertTrue($page->hasNextPage);
             self::assertSame($query instanceof CountedPage ? 2 : null, $page->totalCount);
         }
@@ -522,6 +535,25 @@ final class DataFetcherPaginationTest extends TestCase
             yield [$count, -1, 0];
             yield [$count, 1, -1];
         }
+    }
+
+    /**
+     * Expected raw scalar representation, not a normalization of actual data.
+     * Keep strict assertions: SQL Server's default PDO fetches integers as strings.
+     */
+    private static function driverRows(DatabaseInterface $db, array $rows): array
+    {
+        if ($db->getType() !== 'SQLServer') {
+            return $rows;
+        }
+
+        return array_map(
+            static fn (array $row): array => array_map(
+                static fn (mixed $value): mixed => is_int($value) ? (string) $value : $value,
+                $row,
+            ),
+            $rows,
+        );
     }
 
     private function database(): DatabaseInterface
