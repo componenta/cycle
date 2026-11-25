@@ -60,3 +60,20 @@ The complete package source at `19db08122391796313660e0d3d871245b7597693` was co
 | Entity hydration and extraction, 10,000 entities | 46.0754 | 37.2850 | -19.1% |
 
 These are controlled micro/integration benchmark measurements, not network or production latency guarantees. MySQL and SQL Server additionally have regression tests proving that counted pages with known projection widths use two SELECT statements instead of three; unknown widths retain metadata discovery. Normal CI executes correctness tests only.
+
+## Correctness and portability recheck (25 November 2026)
+
+Full source trees `3db46076af22101df6fbf3fe0ef1445b39796929` and `fc61fd517b13a1e2ee31774b0a55855acb5fe308` were compared on the same PHP 8.5 runner with the same installed dependencies. The baseline already includes the earlier performance optimizations. See the [CI measurement](https://github.com/componenta/cycle/actions/runs/45637674765/job/139287408864).
+
+| Case | Before, ms | After, ms | Change in time |
+| --- | ---: | ---: | ---: |
+| Default mapping, 20,000 rows | 18.1749 | 18.2121 | 0.2% |
+| Custom mapping, 20,000 rows | 52.0278 | 51.3076 | -1.4% |
+| Page without total, 100 rows | 0.1763 | 0.1778 | 0.9% |
+| Page with total, 100 rows | 0.1631 | 0.1657 | 1.6% |
+| Three relation types, 1,000 rows | 5.3662 | 5.3023 | -1.2% |
+| Entity extraction with relations, 20,000 calls | 25.2329 | 25.6912 | 1.8% |
+| Entity extraction without relations, 20,000 calls | 27.6029 | 28.8486 | 4.5% |
+| Entity hydration and extraction, 10,000 entities | 60.8321 | 60.1911 | -1.1% |
+
+Default extraction now also checks cached dynamic-property metadata. The extra cost is visible in isolated extraction (about 23–62 ns per call in this run); combined hydration and extraction and the fetcher workloads remain close to the optimized baseline. These measurements are workload-specific; sequential samples on a shared runner do not establish statistical significance. The normal test workflow remains free of benchmarking steps.
