@@ -81,6 +81,40 @@ final class ConfigIntegrationTest extends TestCase {
         );
     }
 
+    public function testApplicationFactoryCanReplaceUuidHandlerAndRegisterAdditionalRoleLocalHandlers(): void
+    {
+        $composition = (new ConfigFactory())->create(
+            new Environment(['DB_DRIVER' => 'sqlite', 'DB_NAME' => ':memory:']),
+            new ConfigProvider(),
+            new ApplicationTypecastConfigProvider(),
+        );
+        $container = (new ContainerFactory())->create($composition->config, $composition->dependencies);
+        $factory = $container->get(ORMInterface::class)->getFactory();
+        $db = $container->get(DatabaseManager::class)->database();
+        $schema = new \Cycle\ORM\Schema([
+            'first' => [
+                SchemaInterface::ENTITY => \stdClass::class,
+                SchemaInterface::TYPECAST => ['id' => 'uuid', 'name' => 'application'],
+            ],
+            'second' => [
+                SchemaInterface::ENTITY => ExampleTypecast::class,
+                SchemaInterface::TYPECAST => ['other' => 'uuid', 'label' => 'application'],
+            ],
+        ]);
+
+        $first = $factory->typecast($schema, $db, 'first');
+        $second = $factory->typecast($schema, $db, 'second');
+
+        self::assertSame(
+            ['id' => 'custom:one', 'name' => 'first:alice', 'other' => 'untouched'],
+            $first->cast(['id' => 'one', 'name' => 'alice', 'other' => 'untouched']),
+        );
+        self::assertSame(
+            ['id' => 'untouched', 'other' => 'custom:two', 'label' => 'second:bob'],
+            $second->cast(['id' => 'untouched', 'other' => 'two', 'label' => 'bob']),
+        );
+    }
+
     public function testPostgresUuidTypecastRoundTripsBinaryDataWithZeroBytes(): void
     {
         if (getenv('CYCLE_TEST_DB_DRIVER') !== 'postgres') {
@@ -134,6 +168,83 @@ final class ExampleTypecast implements CastableInterface
         foreach ($this->columns as $name) {
             if (isset($data[$name])) {
                 $data[$name] = strtoupper($data[$name]);
+            }
+        }
+        return $data;
+    }
+}
+
+
+final class ApplicationTypecastConfigProvider extends \Componenta\Config\ConfigProvider
+{
+    protected function getFactories(): array
+    {
+        return [
+            \Componenta\Cycle\Typecast\UuidTypecast::class => static fn (\Psr\Container\ContainerInterface $c): ApplicationUuidHandler => new ApplicationUuidHandler(),
+            ApplicationRoleHandler::class => static fn (\Psr\Container\ContainerInterface $c, array $context): ApplicationRoleHandler =>
+                new ApplicationRoleHandler($context['role']),
+        ];
+    }
+
+    protected function getConfig(): array
+    {
+        return [
+            ConfigKey::ROOT => [
+                ConfigKey::TYPECAST_HANDLERS => [ApplicationRoleHandler::class],
+                ConfigKey::BINDINGS => [ApplicationRoleHandler::class],
+            ],
+        ];
+    }
+}
+
+final class ApplicationUuidHandler implements CastableInterface
+{
+    private array $columns = [];
+
+    public function setRules(array $rules): array
+    {
+        foreach ($rules as $column => $rule) {
+            if ($rule === 'uuid') {
+                $this->columns[] = $column;
+                unset($rules[$column]);
+            }
+        }
+        return $rules;
+    }
+
+    public function cast(array $data): array
+    {
+        foreach ($this->columns as $column) {
+            if (isset($data[$column])) {
+                $data[$column] = 'custom:' . $data[$column];
+            }
+        }
+        return $data;
+    }
+}
+
+final class ApplicationRoleHandler implements CastableInterface
+{
+    private array $columns = [];
+
+    public function __construct(private readonly string $role) {}
+
+    public function setRules(array $rules): array
+    {
+        foreach ($rules as $column => $rule) {
+            if ($rule === 'application') {
+                $this->columns[] = $column;
+                unset($rules[$column]);
+            }
+        }
+        return $rules;
+    }
+
+    public function cast(array $data): array
+    {
+        foreach ($this->columns as $column) {
+            if (isset($data[$column])) {
+                $data[$column] = $this->role . ':' . $data[$column];
             }
         }
         return $data;
