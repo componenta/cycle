@@ -124,7 +124,7 @@ class LazyGhostEntityFactory
             $prop = $this->getProperty($reflection, $property);
 
             if ($prop !== null) {
-                if ($prop->isReadOnly() && $prop->isInitialized($entity)) {
+                if ($prop->isReadOnly() && !$prop->isLazy($entity) && $prop->isInitialized($entity)) {
                     continue;
                 }
 
@@ -163,11 +163,17 @@ class LazyGhostEntityFactory
         $result = [];
 
         foreach ($this->getExtractableProperties($entity::class, $relMap) as $prop) {
-            if (!$prop->isInitialized($entity)) {
+            // isInitialized() itself can initialize a lazy object. A lazy
+            // scalar that has never been written still has its declared default.
+            if ($prop->isLazy($entity)) {
+                if ($prop->hasDefaultValue()) {
+                    $result[$prop->getName()] = $prop->getDefaultValue();
+                }
                 continue;
             }
-
-            $result[$prop->getName()] = $prop->getRawValue($entity);
+            if ($prop->isInitialized($entity)) {
+                $result[$prop->getName()] = $prop->getRawValue($entity);
+            }
         }
 
         return $result;
@@ -195,7 +201,14 @@ class LazyGhostEntityFactory
 
             $prop = $this->getProperty($reflection, $name);
 
-            if ($prop !== null && $prop->isInitialized($entity)) {
+            if ($prop === null) {
+                continue;
+            }
+            if ($prop->isLazy($entity)) {
+                if ($prop->hasDefaultValue()) {
+                    $result[$name] = $prop->getDefaultValue();
+                }
+            } elseif ($prop->isInitialized($entity)) {
                 $result[$name] = $prop->getRawValue($entity);
             }
         }

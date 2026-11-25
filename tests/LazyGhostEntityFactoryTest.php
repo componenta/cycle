@@ -161,6 +161,26 @@ final class LazyGhostEntityFactoryTest extends TestCase {
         self::assertSame('STORED', $entity->name);
         self::assertSame(['name' => 'stored'], $factory->extractData($map, $entity));
     }
+
+    public function testReadonlyHydrationAndExtractionDoNotResolvePendingRelations(): void
+    {
+        $related = new \stdClass();
+        $reference = $this->createStub(\Cycle\ORM\Reference\ReferenceInterface::class);
+        $relation = $this->createMock(ActiveRelationInterface::class);
+        $relation->expects(self::once())->method('resolve')->with($reference, true)->willReturn($related);
+        $relation->method('collect')->willReturnArgument(0);
+        $map = $this->relationMap(true, $relation);
+        $factory = new LazyGhostEntityFactory();
+        $entity = $factory->create($map, ReadonlyDefaultEntity::class);
+
+        $factory->upgrade($map, $entity, ['id' => 7, 'related' => $reference]);
+
+        self::assertSame(7, $entity->id);
+        self::assertSame(['id' => 7, 'label' => 'default'], $factory->extractData($map, $entity));
+        self::assertSame(['related' => $reference], $factory->extractRelations($map, $entity));
+        self::assertSame($related, $entity->related);
+        self::assertSame(['related' => $related], $factory->extractRelations($map, $entity));
+    }
 }
 
 final class CollectionEntity
@@ -202,4 +222,13 @@ final class HookedEntity
     public string $name {
         get => strtoupper($this->name);
     }
+}
+
+
+final class ReadonlyDefaultEntity
+{
+    public readonly int $id;
+    public string $label = 'default';
+    public string $uninitialized;
+    public ?object $related = null;
 }
