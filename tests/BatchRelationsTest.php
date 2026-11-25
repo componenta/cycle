@@ -189,6 +189,46 @@ it('does not merge distinct integer and text relation keys in SQLite', function 
     expect(count($logger->queries))->toBeLessThanOrEqual(7);
 });
 
+it('retains equivalent relation keys when SQLite applies column affinity', function (string $type, int|string $storedKey): void {
+    $composition = (new ConfigFactory())->create(
+        new Environment(['DB_DRIVER' => 'sqlite', 'DB_NAME' => ':memory:']),
+        new ConfigProvider(),
+    );
+    $db = (new ContainerFactory())->create($composition->config, $composition->dependencies)
+        ->get(DatabaseManager::class)->database();
+
+    // The parent columns preserve the original integer and text values.
+    // The related columns, however, compare them as equivalent by affinity.
+    $db->execute('CREATE TABLE records (id, owner_id)');
+    $db->execute("CREATE TABLE owners (id $type, label TEXT)");
+    $db->execute("CREATE TABLE children (id INTEGER, record_id $type)");
+    $db->execute('CREATE TABLE tags (id INTEGER)');
+    $db->execute("CREATE TABLE record_tags (record_id $type, tag_id INTEGER)");
+
+    $db->execute("INSERT INTO records VALUES (1, 1), ('1', '1')");
+    $db->execute("INSERT INTO owners VALUES (1, 'owner')");
+    $db->execute('INSERT INTO children VALUES (8, 1)');
+    $db->execute('INSERT INTO tags VALUES (10)');
+    $db->execute('INSERT INTO record_tags VALUES (1, 10)');
+
+    $logger = new RelationQueryLogger();
+    $db->getDriver(DatabaseInterface::READ)->setLogger($logger);
+
+    $expectedRelations = [
+        'owner' => ['id' => $storedKey, 'label' => 'owner'],
+        'children' => [['id' => 8, 'record_id' => $storedKey]],
+        'tags' => [['id' => 10]],
+    ];
+    expect((new BatchRecordsFetcher($db))())->toBe([
+        ['id' => 1, 'ownerId' => 1] + $expectedRelations,
+        ['id' => '1', 'ownerId' => '1'] + $expectedRelations,
+    ]);
+    expect(count($logger->queries))->toBeLessThanOrEqual(7);
+})->with([
+    'integer affinity' => ['INTEGER', 1],
+    'text affinity' => ['TEXT', '1'],
+]);
+
 final class BatchRecordsFetcher extends DataFetcher
 {
     public function __invoke(): array
