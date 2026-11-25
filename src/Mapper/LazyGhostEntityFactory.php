@@ -104,7 +104,7 @@ class LazyGhostEntityFactory
                     $prop = $this->getProperty($reflection, $property);
 
                     if ($prop !== null && !($prop->isReadOnly() && $prop->isInitialized($entity))) {
-                        $prop->setValue($entity, $resolved);
+                        $prop->setRawValueWithoutLazyInitialization($entity, $resolved);
                     }
                 }
             } else {
@@ -167,7 +167,7 @@ class LazyGhostEntityFactory
                 continue;
             }
 
-            $result[$prop->getName()] = $prop->getValue($entity);
+            $result[$prop->getName()] = $prop->getRawValue($entity);
         }
 
         return $result;
@@ -196,7 +196,7 @@ class LazyGhostEntityFactory
             $prop = $this->getProperty($reflection, $name);
 
             if ($prop !== null && $prop->isInitialized($entity)) {
-                $result[$name] = $prop->getValue($entity);
+                $result[$name] = $prop->getRawValue($entity);
             }
         }
 

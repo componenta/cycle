@@ -149,6 +149,18 @@ final class LazyGhostEntityFactoryTest extends TestCase {
         self::assertSame(1, $entity->id);
         self::assertFalse(property_exists($entity, 'schema_only'));
     }
+
+    public function testExtractionReturnsStoredValuesRatherThanComputedGetterValues(): void
+    {
+        $map = $this->relationMap(false);
+        $factory = new LazyGhostEntityFactory();
+        $entity = $factory->create($map, HookedEntity::class);
+
+        $factory->upgrade($map, $entity, ['name' => 'stored']);
+
+        self::assertSame('STORED', $entity->name);
+        self::assertSame(['name' => 'stored'], $factory->extractData($map, $entity));
+    }
 }
 
 final class CollectionEntity
@@ -181,5 +193,13 @@ final class RejectingEntity
     public function __set(string $name, mixed $value): void
     {
         throw new \DomainException('Unexpected field.');
+    }
+}
+
+
+final class HookedEntity
+{
+    public string $name {
+        get => strtoupper($this->name);
     }
 }
