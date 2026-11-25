@@ -14,9 +14,9 @@ use Cycle\ORM\ORMInterface;
 use PHPUnit\Framework\TestCase;
 
 final class ConfigIntegrationTest extends TestCase {
-    private function container(array $additionalConfig = []): \Componenta\Config\ContainerValue {
+    private function container(array $additionalConfig = [], array $environment = []): \Componenta\Config\ContainerValue {
         $composition = (new ConfigFactory())->create(
-            new Environment(['DB_DRIVER' => 'sqlite', 'DB_NAME' => ':memory:']),
+            new Environment(array_replace(['DB_DRIVER' => 'sqlite', 'DB_NAME' => ':memory:'], $environment)),
             new ConfigProvider(),
             static fn (): array => [ConfigKey::ROOT => [ConfigKey::MIGRATIONS => ['namespace' => 'ExampleMigrations'], ...$additionalConfig]],
         );
@@ -79,6 +79,38 @@ final class ConfigIntegrationTest extends TestCase {
             '018f0000-0000-7000-8000-000000000001',
             $first->cast(['id' => '018f0000-0000-7000-8000-000000000001'])['id']->toString(),
         );
+    }
+
+    public function testPostgresUuidTypecastRoundTripsBinaryDataWithZeroBytes(): void
+    {
+        if (getenv('CYCLE_TEST_DB_DRIVER') !== 'postgres') {
+            self::markTestSkipped('This test requires a configured PostgreSQL database.');
+        }
+        $env = ['DB_DRIVER' => 'postgres'];
+        foreach (['NAME', 'HOST', 'PORT', 'USER', 'PASSWORD', 'SCHEMA'] as $key) {
+            $value = getenv('CYCLE_TEST_DB_' . $key);
+            if ($value !== false) {
+                $env['DB_' . $key] = $value;
+            }
+        }
+        $container = $this->container(environment: $env);
+        $database = $container->get(DatabaseManager::class)->database();
+        $factory = $container->get(ORMInterface::class)->getFactory();
+        $schema = new \Cycle\ORM\Schema([
+            'record' => [SchemaInterface::ENTITY => \stdClass::class, SchemaInterface::TYPECAST => ['id' => 'uuid']],
+        ]);
+
+        $handler = $factory->typecast($schema, $database, 'record');
+        $uuid = \Componenta\Identity\Uuid::fromString('018f0000-0000-7000-8000-000000000001');
+        $data = $handler->uncast(['id' => $uuid]);
+        $statement = $database->query('SELECT CAST(? AS BYTEA) AS id', [$data['id']]);
+        try {
+            $row = $statement->fetch();
+        } finally {
+            $statement->close();
+        }
+
+        self::assertSame($uuid->toString(), $handler->cast($row)['id']->toString());
     }
 }
 

@@ -49,10 +49,11 @@ class ConfigProvider extends \Componenta\Config\ConfigProvider
             EntityManager::class => EntityManagerFactory::class,
             CoreFactory::class => CoreFactoryFactory::class,
             SchemaInterface::class => SchemaFactory::class,
-            UuidTypecast::class => static fn (ContainerInterface $container): UuidTypecast => new UuidTypecast(
+            UuidTypecast::class => static fn (ContainerInterface $container, array $context = []): UuidTypecast => new UuidTypecast(
                 $container->has(UuidFactoryInterface::class)
                     ? $container->get(UuidFactoryInterface::class)
                     : new UuidFactory(),
+                binaryLob: ($context['database'] ?? null)?->getType() === 'Postgres',
             ),
 
             // Migrations
