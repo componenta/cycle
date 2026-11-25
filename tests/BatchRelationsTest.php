@@ -179,7 +179,7 @@ final class RelationQueryLogger extends \Psr\Log\AbstractLogger
     /** @var list<string> */
     public array $queries = [];
 
-    public function log($level, string|\Stringable $message, array $context = []): void
+    public function log($level, $message, array $context = []): void
     {
         if ($level === \Psr\Log\LogLevel::INFO && str_starts_with(ltrim((string) $message), 'SELECT')) {
             $this->queries[] = (string) $message;
