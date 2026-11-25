@@ -96,11 +96,11 @@ it('returns the correct rows for each public predicate filter', function (Filter
     yield 'in with null' => [new InFilter('amount', [10, null]), [1]];
     yield 'not in with null' => [new NotInFilter('amount', [10, null]), []];
     yield 'in with mixed bound expression' => [
-        new InFilter('amount', [10, new Fragment('CAST(? AS INTEGER) + CAST(? AS INTEGER)', 15, 15)]),
+        new InFilter('amount', [10, new Fragment('CAST(? AS DECIMAL(10,0)) + CAST(? AS DECIMAL(10,0))', 15, 15)]),
         [1, 3],
     ];
     yield 'not in with mixed bound expression' => [
-        new NotInFilter('amount', [10, new Fragment('CAST(? AS INTEGER) + CAST(? AS INTEGER)', 15, 15)]),
+        new NotInFilter('amount', [10, new Fragment('CAST(? AS DECIMAL(10,0)) + CAST(? AS DECIMAL(10,0))', 15, 15)]),
         [2],
     ];
     yield 'null' => [new NullFilter('amount'), [4]];
