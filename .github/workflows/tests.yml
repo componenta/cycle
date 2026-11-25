@@ -39,7 +39,7 @@ jobs:
           tools: composer:v2
       - run: composer update --prefer-lowest --prefer-stable --no-interaction --prefer-dist
       - run: composer show --direct
-      - run: composer test -- --display-deprecations --display-phpunit-deprecations
+      - run: composer test -- --display-deprecations --display-phpunit-deprecations --fail-on-deprecation --fail-on-phpunit-deprecation
 
   mysql:
     runs-on: ubuntu-latest
