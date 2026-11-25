@@ -6,6 +6,8 @@ namespace Componenta\Cycle\Filter;
 
 use Componenta\Cycle\FilterInterface;
 use Componenta\Cycle\Internal\SqlIdentifier;
+use Cycle\Database\Injection\Expression;
+use Cycle\Database\Injection\Fragment;
 use Cycle\Database\Query\SelectQuery;
 
 /**
@@ -46,20 +48,21 @@ final readonly class SearchFilter implements FilterInterface
             LikeMode::Exact => $this->value,
         };
 
-        // Case-insensitive regardless of the underlying DB collation:
-        // MySQL with `_bin` / PostgreSQL / SQLite all compare LIKE
-        // case-sensitively by default. Normalizing both sides via LOWER()
-        // gives consistent user-facing behaviour across backends. The
-        // trade-off is that column-side LOWER() prevents native index usage
-        // - add a functional index `LOWER(column)` in hot-path queries.
-        $lowerPattern = mb_strtolower($pattern);
+        // Apply the database's own case folding to both operands. PHP and
+        // SQL may implement different Unicode case mappings; SQLite's
+        // built-in LOWER, for example, is ASCII-only.
         $columns = $this->columns;
 
-        return $query->where(static function (SelectQuery $q) use ($columns, $lowerPattern) {
+        return $query->where(static function (SelectQuery $q) use ($columns, $pattern): void {
             foreach ($columns as $i => $column) {
-                $expr = new \Cycle\Database\Injection\Expression("LOWER({$column})");
-                if ($i === 0) $q->where($expr, 'like', $lowerPattern);
-                else $q->orWhere($expr, 'like', $lowerPattern);
+                $expr = new Expression("LOWER($column)");
+                $value = new Fragment('LOWER(?)', $pattern);
+
+                if ($i === 0) {
+                    $q->where($expr, 'like', $value);
+                } else {
+                    $q->orWhere($expr, 'like', $value);
+                }
             }
         });
     }
