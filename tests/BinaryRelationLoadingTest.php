@@ -120,6 +120,13 @@ final class BinaryRelationsFetcher extends DataFetcher
         return $value === null ? null : $this->mapId($value);
     }
 
+    protected function isBinaryRelationKey(string $column): bool
+    {
+        // PostgreSQL continues to exercise automatic stream detection.
+        // SQL Server returns binary keys as strings and needs explicit binding.
+        return $this->db->getType() === 'SQLServer' && in_array($column, ['id', 'owner_id'], true);
+    }
+
     protected function loadRelations(array &$results, array $rows, ?object $query): void
     {
         $label = static fn (array $row): string => $row['label'];

@@ -434,7 +434,10 @@ abstract class DataFetcher
                 : $foreignKey
         );
 
-        $this->relationLoader()->belongsTo($results, $rows, $foreignKey, $table, $columns, $key, $tableKey, $transform);
+        $this->relationLoader()->belongsTo(
+            $results, $rows, $foreignKey, $table, $columns, $key, $tableKey, $transform,
+            $this->isBinaryRelationKey($foreignKey),
+        );
     }
 
     /**
@@ -462,7 +465,10 @@ abstract class DataFetcher
         array $columns = ['*'],
         ?Closure $transform = null,
     ): void {
-        $this->relationLoader()->hasMany($results, $rows, $resultKey, $table, $foreignKey, $localKey, $columns, $transform);
+        $this->relationLoader()->hasMany(
+            $results, $rows, $resultKey, $table, $foreignKey, $localKey, $columns, $transform,
+            $this->isBinaryRelationKey($localKey),
+        );
     }
 
     /**
@@ -499,7 +505,20 @@ abstract class DataFetcher
         $this->relationLoader()->belongsToMany(
             $results, $rows, $resultKey, $relatedTable, $pivotTable, $pivotLocalKey,
             $pivotForeignKey, $localKey, $relatedKey, $columns, $transform,
+            $this->isBinaryRelationKey($localKey),
         );
+    }
+
+    /**
+     * Opt in to binary parameter binding for a key in the raw root row.
+     *
+     * A driver can return binary columns as plain PHP strings, which are
+     * indistinguishable from text. Stream-backed keys are detected separately
+     * by the loader. Do not enable this for ordinary text or numeric columns.
+     */
+    protected function isBinaryRelationKey(string $column): bool
+    {
+        return false;
     }
 
     private function relationLoader(): RelationLoader

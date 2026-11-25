@@ -31,6 +31,7 @@ final readonly class RelationLoader
         string $key,
         string $tableKey = 'id',
         ?Closure $transform = null,
+        bool $binaryKey = false,
     ): void {
         if ($results === []) {
             return;
@@ -43,7 +44,7 @@ final readonly class RelationLoader
             return;
         }
 
-        [$ids, , $hasRepeatedKeys] = $this->collectIds($rows, $foreignKey);
+        [$ids, , $hasRepeatedKeys] = $this->collectIds($rows, $foreignKey, $binaryKey);
 
         if ($ids === []) {
             foreach ($results as &$result) {
@@ -112,6 +113,7 @@ final readonly class RelationLoader
         string $localKey = 'id',
         array $columns = ['*'],
         ?Closure $transform = null,
+        bool $binaryKey = false,
     ): void {
         if ($results === []) {
             return;
@@ -124,7 +126,7 @@ final readonly class RelationLoader
             return;
         }
 
-        [$ids] = $this->collectIds($rows, $localKey);
+        [$ids] = $this->collectIds($rows, $localKey, $binaryKey);
 
         if ($ids === []) {
             foreach ($results as &$result) {
@@ -175,6 +177,7 @@ final readonly class RelationLoader
         string $relatedKey = 'id',
         array $columns = ['*'],
         ?Closure $transform = null,
+        bool $binaryKey = false,
     ): void {
         if ($results === []) {
             return;
@@ -187,7 +190,7 @@ final readonly class RelationLoader
             return;
         }
 
-        [$ids, $binary] = $this->collectIds($rows, $localKey);
+        [$ids, $binary] = $this->collectIds($rows, $localKey, $binaryKey);
 
         if ($ids === []) {
             foreach ($results as &$result) {
@@ -253,10 +256,9 @@ final readonly class RelationLoader
     /**
      * @return array{0: list<mixed>, 1: bool, 2: bool}
      */
-    private function collectIds(array $rows, string $column): array
+    private function collectIds(array $rows, string $column, bool $binary): array
     {
         $ids = [];
-        $binary = false;
         foreach (array_column($rows, $column) as $id) {
             if ($id === null) {
                 continue;
@@ -276,7 +278,12 @@ final readonly class RelationLoader
         // A DBAL Parameter array infers each child's type independently.
         // Preserve the binary type explicitly for a stream-backed key column.
         if ($binary) {
-            $ids = array_map(static fn (string $id): Parameter => new Parameter($id, PDO::PARAM_LOB), $ids);
+            $ids = array_map(static function (mixed $id): Parameter {
+                if (!is_string($id)) {
+                    throw new InvalidArgumentException('A binary relation key must be a string or a seekable stream.');
+                }
+                return new Parameter($id, PDO::PARAM_LOB);
+            }, $ids);
         }
 
         return [$ids, $binary, $hasRepeatedKeys];

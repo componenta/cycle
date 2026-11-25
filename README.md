@@ -119,3 +119,12 @@ When an additional handler needs Componenta DI services or the current ORM role,
 On SQLite, `DateFilter` range boundaries use date-only ISO strings, so both date-only and consistently formatted ISO datetime values remain comparable without applying a function to the indexed column. The lazy ghost factory round-trips actual dynamic properties of `stdClass` and classes explicitly allowing dynamic properties. Dynamic relation references must be resolved before assignment because a missing dynamic property cannot be a lazy property. Ordinary declared properties and unresolved declared relations retain their existing behavior.
 
 For raw ORM query criteria targeting binary UUID columns, use the role mapper's `uncast()` to encode the criterion, as Cycle's selectors accept database values. The mapper automatically handles UUID conversion in entity persistence commands.
+
+For a database that returns binary key columns as PHP strings (such as SQL Server), override `DataFetcher::isBinaryRelationKey(string $column): bool` to return `true` for the relevant raw root-row columns. This selects `PDO::PARAM_LOB` binding for the batched relation queries. PostgreSQL's seekable `bytea` streams are detected automatically. Do not mark text or numeric keys as binary. SQLite keys must be bound using the same storage representation as the written values (text or BLOB).
+
+```php
+protected function isBinaryRelationKey(string $column): bool
+{
+    return in_array($column, ['id', 'owner_id'], true);
+}
+```
