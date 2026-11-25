@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Componenta\Cycle\Filter;
 
 use Componenta\Cycle\FilterInterface;
+use Componenta\Cycle\Internal\SqlIdentifier;
 use Cycle\Database\Query\SelectQuery;
 
 /**
@@ -19,7 +20,9 @@ final readonly class BetweenFilter implements FilterInterface
         private string $column,
         private mixed $from,
         private mixed $to,
-    ) {}
+    ) {
+        SqlIdentifier::assertColumn($this->column);
+    }
 
     public function apply(SelectQuery $query): SelectQuery
     {

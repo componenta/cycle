@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Componenta\Cycle\Filter;
 
 use Componenta\Cycle\FilterInterface;
+use Componenta\Cycle\Internal\SqlIdentifier;
 use Cycle\Database\Query\SelectQuery;
 
 /**
@@ -22,6 +23,8 @@ final readonly class ComparisonFilter implements FilterInterface
         private mixed $value,
         private string $operator = '=',
     ) {
+        SqlIdentifier::assertColumn($this->column);
+
         if (!in_array($this->operator, self::ALLOWED_OPERATORS, true)) {
             throw new \InvalidArgumentException(
                 sprintf('Operator must be one of: %s', implode(', ', self::ALLOWED_OPERATORS))

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Componenta\Cycle\Filter;
 
 use Componenta\Cycle\FilterInterface;
+use Componenta\Cycle\Internal\SqlIdentifier;
 use Cycle\Database\Query\SelectQuery;
 
 /**
@@ -20,8 +21,15 @@ final readonly class SearchFilter implements FilterInterface
         private string $value,
         private LikeMode $mode = LikeMode::Contains,
     ) {
-        if ($this->columns === []) {
+        if ($this->columns === [] || !array_is_list($this->columns)) {
             throw new \InvalidArgumentException('At least one column required');
+        }
+
+        foreach ($this->columns as $column) {
+            if (!is_string($column)) {
+                throw new \InvalidArgumentException('Search columns must be strings.');
+            }
+            SqlIdentifier::assertColumn($column);
         }
 
         if ($this->value === '') {

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Componenta\Cycle\Filter;
 
 use Componenta\Cycle\FilterInterface;
+use Componenta\Cycle\Internal\SqlIdentifier;
 use Cycle\Database\Injection\Parameter;
 use Cycle\Database\Query\SelectQuery;
 
@@ -21,6 +22,8 @@ final readonly class NotInFilter implements FilterInterface
         private string $column,
         private array $values,
     ) {
+        SqlIdentifier::assertColumn($this->column);
+
         if ($this->values === []) {
             throw new \InvalidArgumentException('Values cannot be empty array');
         }

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Componenta\Cycle\Filter;
 
 use Componenta\Cycle\FilterInterface;
+use Componenta\Cycle\Internal\SqlIdentifier;
 use Cycle\Database\Query\SelectQuery;
 
 /**
@@ -21,6 +22,8 @@ final readonly class DateRangeFilter implements FilterInterface
         private ?\DateTimeInterface $to = null,
         private string $format = 'Y-m-d H:i:s',
     ) {
+        SqlIdentifier::assertColumn($this->column);
+
         if ($this->from === null && $this->to === null) {
             throw new \InvalidArgumentException('At least one of from/to must be provided');
         }

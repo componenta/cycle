@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Componenta\Cycle\Filter;
 
 use Componenta\Cycle\FilterInterface;
+use Componenta\Cycle\Internal\SqlIdentifier;
 use Cycle\Database\Query\SelectQuery;
 
 /**
@@ -21,7 +22,9 @@ final readonly class SoftDeleteFilter implements FilterInterface
     public function __construct(
         private string $column = 'deletedAt',
         private bool $onlyActive = true,
-    ) {}
+    ) {
+        SqlIdentifier::assertColumn($this->column);
+    }
 
     public function apply(SelectQuery $query): SelectQuery
     {

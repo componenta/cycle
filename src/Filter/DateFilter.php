@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Componenta\Cycle\Filter;
 
 use Componenta\Cycle\FilterInterface;
+use Componenta\Cycle\Internal\SqlIdentifier;
 use Cycle\Database\Injection\Parameter;
 use Cycle\Database\Query\SelectQuery;
 
@@ -26,7 +27,9 @@ final readonly class DateFilter implements FilterInterface
     public function __construct(
         private array $date,
         private string $column = 'created_at',
-    ) {}
+    ) {
+        SqlIdentifier::assertColumn($this->column);
+    }
 
     public function apply(SelectQuery $query): SelectQuery
     {

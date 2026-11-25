@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Componenta\Cycle\Filter;
 
 use Componenta\Cycle\FilterInterface;
+use Componenta\Cycle\Internal\SqlIdentifier;
 use Cycle\Database\Query\SelectQuery;
 
 /**
@@ -20,6 +21,8 @@ final readonly class LikeFilter implements FilterInterface
         private string $value,
         private LikeMode $mode = LikeMode::Contains,
     ) {
+        SqlIdentifier::assertColumn($this->column);
+
         if ($this->value === '') {
             throw new \InvalidArgumentException('Value cannot be empty string');
         }
