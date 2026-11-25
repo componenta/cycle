@@ -39,7 +39,10 @@
     },
     "scripts": {
         "test": "@php vendor/bin/phpunit tests",
-        "bench": "@php benchmarks/data-fetcher.php"
+        "bench": [
+            "@php benchmarks/data-fetcher.php",
+            "@php benchmarks/orm-hydration.php"
+        ]
     },
     "config": {
         "sort-packages": true
