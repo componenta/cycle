@@ -90,6 +90,15 @@ final class DataFetcherProjectionTest extends TestCase
         $fetch(new ProjectionQuery(orderBy: ['secret' => Direction::ASC]));
     }
 
+    public function testRejectsNonStringRequestedColumnsEvenIfTheyCanBeCoercedToStrings(): void
+    {
+        $fetch = new PublicProjectionFetcher($this->database());
+        $this->expectException(\InvalidArgumentException::class);
+        $fetch(new ProjectionQuery([new class implements \Stringable {
+            public function __toString(): string { return 'title'; }
+        }]));
+    }
+
     public function testTrustedQueryRejectsSqlExpressionsAsRequestedColumns(): void
     {
         $fetch = new ProjectionFetcher($this->database());

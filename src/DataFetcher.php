@@ -9,10 +9,10 @@ use Componenta\Cycle\Filter\OrderFilter;
 use Componenta\Cycle\Filter\PaginationFilter;
 use Componenta\Cycle\Internal\PaginationExecutor;
 use Componenta\Cycle\Internal\PaginationOrder;
+use Componenta\Cycle\Internal\ProjectionColumns;
 use Componenta\Cycle\Internal\ResultReader;
 use Componenta\Cycle\Internal\RelationLoader;
 use Componenta\Cycle\Internal\RowMapper;
-use Componenta\Cycle\Internal\SqlIdentifier;
 use Componenta\Cycle\Query\PaginableInterface;
 use Componenta\Cycle\Query\SelectableInterface;
 use Componenta\Cycle\Query\SortableInterface;
@@ -505,15 +505,7 @@ abstract class DataFetcher
         }
 
         if ($query instanceof SortableInterface && $query->orderBy !== null) {
-            $allowed = $this->sortableColumns();
-            $order = [];
-            foreach ($query->orderBy as $column => $direction) {
-                if (!is_string($column)) {
-                    throw new \InvalidArgumentException('Ordering requires named columns.');
-                }
-                $order[$this->resolveRequestedColumn($column, $allowed)] = $direction;
-            }
-            yield new OrderFilter($order);
+            yield new OrderFilter(ProjectionColumns::order($query->orderBy, $this->sortableColumns()));
         }
     }
 
@@ -526,29 +518,11 @@ abstract class DataFetcher
     protected function getColumns(?object $query): array
     {
         $allowed = $this->selectableColumns();
-        if ($query instanceof SelectableInterface && $query->columns !== null) {
-            $columns = $query->columns;
-            if ($columns === [] || !array_is_list($columns)) {
-                throw new \InvalidArgumentException('Selected columns must be a non-empty list.');
-            }
 
-            return array_map(
-                fn (string $column): string => $this->resolveRequestedColumn($column, $allowed),
-                $columns,
-            );
-        }
-
-        if ($allowed !== null) {
-            if ($allowed === []) {
-                throw new \InvalidArgumentException('At least one selectable column is required.');
-            }
-            return array_map(
-                fn (string $column): string => $this->resolveRequestedColumn($column, $allowed),
-                array_keys($allowed),
-            );
-        }
-
-        return ['*'];
+        return ProjectionColumns::select(
+            $query instanceof SelectableInterface ? $query->columns : null,
+            $allowed,
+        );
     }
 
     /**
@@ -566,21 +540,6 @@ abstract class DataFetcher
     protected function sortableColumns(): ?array
     {
         return null;
-    }
-
-    /** @param array<string, string>|null $allowed */
-    private function resolveRequestedColumn(string $column, ?array $allowed): string
-    {
-        if ($allowed !== null) {
-            if (!isset($allowed[$column]) || !is_string($allowed[$column])) {
-                throw new \InvalidArgumentException('Column is not available for this query.');
-            }
-            $column = $allowed[$column];
-        }
-
-        SqlIdentifier::assertColumn($column);
-
-        return $column;
     }
 
     /**

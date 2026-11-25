@@ -105,3 +105,7 @@ When request data controls field names, override `selectableColumns()` and `sort
 UUID typecasts use binary storage; the default ORM factory binds PostgreSQL `bytea` values as LOB parameters and restores binary strings, hexadecimal `bytea` text and PDO streams. Manually constructed `UuidTypecast` instances keep raw binary output unless `binaryLob: true` is supplied.
 
 SQL Server certificates are verified by default. For local test servers with a self-signed certificate, `DB_TRUST_SERVER_CERTIFICATE=true` is an explicit opt-in; do not use it as a production default. The SQL Server pagination regression tests accept `CYCLE_TEST_DB_TRUST_SERVER_CERTIFICATE` as the corresponding test-only setting.
+
+### Fetcher internals and compatibility
+
+`DataFetcher` orchestrates projection reads. Row transformation, statement lifetime, pagination, field admission and batched relations are owned by internal implementations. The protected extension methods (including `fetchRow`, `transformData`, `mapField`, `fetchResults`, `countRows`, `getColumns`, `getFilters`, and the batch-relation helpers) keep their established signatures and override behavior. Internal classes are not extension points. The default pagination path stores no execution context; an isolated, scoped hint is retained only for custom `fetchResults` overrides that materialize rows before delegating to the base implementation.
