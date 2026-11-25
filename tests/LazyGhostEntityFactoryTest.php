@@ -215,6 +215,47 @@ it('extracts dynamic fields without initializing pending relations', function ()
     expect($factory->extractRelations($map, $plain))->toBe(['related' => null]);
 });
 
+it('publishes declared fields before dynamic assignments can initialize relations', function (string $class): void {
+    $related = new \stdClass();
+    $reference = $this->createStub(\Cycle\ORM\Reference\ReferenceInterface::class);
+    $relation = $this->createMock(ActiveRelationInterface::class);
+    $entity = null;
+
+    $relation->expects($this->once())->method('resolve')->with($reference, true)
+        ->willReturnCallback(static function () use (&$entity, $related): object {
+            expect($entity->id)->toBe(42);
+            expect($entity->label)->toBe('current');
+            return $related;
+        });
+    $relation->method('collect')->willReturnArgument(0);
+    $map = lazyGhostEntityFactoryRelationMap($this->createStub(...), true, $relation);
+    $factory = new LazyGhostEntityFactory();
+    $entity = $factory->create($map, $class);
+
+    // ORM column order must not cause the relation resolver to observe
+    // partially hydrated declared fields.
+    $factory->upgrade($map, $entity, [
+        'extra' => 'value',
+        'id' => 42,
+        'related' => $reference,
+        'label' => 'current',
+    ]);
+
+    expect($entity->id)->toBe(42)
+        ->and($entity->label)->toBe('current')
+        ->and($entity->related)->toBe($related)
+        ->and($factory->extractRelations($map, $entity))->toBe(['related' => $related]);
+
+    if ($entity instanceof MagicHydrationEntity) {
+        expect($entity->observed)->toBe(['extra' => ['value', 42, 'current', $related]]);
+    } else {
+        expect($entity->extra)->toBe('value');
+    }
+})->with([
+    'dynamic property' => [DynamicHydrationEntity::class],
+    'magic setter' => [MagicHydrationEntity::class],
+]);
+
 it('honors the current relation map when extracting fields', function (): void {
     $withRelation = lazyGhostEntityFactoryRelationMap($this->createStub(...), true);
     $withoutRelation = lazyGhostEntityFactoryRelationMap($this->createStub(...), false);
@@ -404,4 +445,25 @@ final class DynamicHookEntity
         get => throw new \LogicException('Virtual properties must not be evaluated by extraction.');
     }
     public ?object $related;
+}
+
+#[\AllowDynamicProperties]
+final class DynamicHydrationEntity
+{
+    public int $id;
+    public string $label;
+    public ?object $related;
+}
+
+final class MagicHydrationEntity
+{
+    public int $id;
+    public string $label;
+    public ?object $related;
+    public array $observed = [];
+
+    public function __set(string $name, mixed $value): void
+    {
+        $this->observed[$name] = [$value, $this->id, $this->label, $this->related];
+    }
 }
