@@ -46,6 +46,26 @@ final class DataFetcherMappingTest extends TestCase
         self::assertSame(['newAmount' => 6, 'rawTotal' => '5'], $clone($row, $query));
     }
 
+    public function testDefaultMappingUsesCurrentFieldAndCasterConfiguration(): void
+    {
+        $caster = $this->createStub(CasterInterface::class);
+        $caster->method('cast')->willReturnCallback(static fn(mixed $value): int => (int) $value);
+        $provider = $this->createStub(CasterProviderInterface::class);
+        $provider->method('provide')->willReturnMap([['integer', $caster]]);
+        $fetcher = new PlainMappingFetcher($this->createStub(DatabaseInterface::class), $provider);
+        $row = ['total_value' => '5', 'first_name' => 'Alice', 'hidden_value' => 'hidden'];
+
+        self::assertSame(['amount' => '5', 'firstName' => 'Alice'], $fetcher($row));
+        $fetcher->enableAmountCaster();
+        self::assertSame(['amount' => 5, 'firstName' => 'Alice'], $fetcher($row));
+    }
+
+    public function testOverriddenNamingHookIsNotBypassedByDefaultMapping(): void
+    {
+        $fetcher = new CustomSnakeMappingFetcher($this->createStub(DatabaseInterface::class));
+        self::assertSame(['custom_first_name' => 'Alice'], $fetcher(['first_name' => 'Alice']));
+    }
+
     public function testMissingCasterProviderFailsThroughPublicFetch(): void
     {
         $fetcher = new MappingContractFetcher($this->createStub(DatabaseInterface::class));
@@ -107,5 +127,30 @@ final class MappingContractFetcher extends DataFetcher
     protected function transformData(array $data, ?object $query): array
     {
         return parent::transformData($data, $query) + ['rawTotal' => $data['total_value']];
+    }
+}
+
+
+class PlainMappingFetcher extends DataFetcher
+{
+    protected array $fieldMapping = ['total_value' => 'amount'];
+    protected array $excluded = ['hiddenValue'];
+
+    public function __invoke(array $row): array
+    {
+        return $this->fetchResults([$row], null, null)[0];
+    }
+
+    public function enableAmountCaster(): void
+    {
+        $this->casters['total_value'] = 'integer';
+    }
+}
+
+final class CustomSnakeMappingFetcher extends PlainMappingFetcher
+{
+    protected function snakeToCamel(string $string): string
+    {
+        return 'custom_' . $string;
     }
 }

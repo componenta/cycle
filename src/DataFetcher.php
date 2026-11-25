@@ -56,6 +56,10 @@ abstract class DataFetcher
 
     private readonly RowMapper $rowMapper;
 
+    /** @var array<string, string> */
+    private readonly array $resolvedMappers;
+    private readonly bool $usesDefaultFieldHooks;
+
     /**
      * Whether the child class overrides loadRelations()
      */
@@ -73,11 +77,15 @@ abstract class DataFetcher
         protected readonly DatabaseInterface $db,
         protected readonly ?CasterProviderInterface $casterProvider = null,
     ) {
-        $this->rowMapper = new RowMapper(
-            $casterProvider,
+        $this->rowMapper = new RowMapper($casterProvider);
+        $this->resolvedMappers = RowMapper::discoverMethods(
             get_class_methods($this),
             $this->camelToSnake(...),
         );
+        $this->usesDefaultFieldHooks = $this->resolvedMappers === []
+            && (new ReflectionMethod(static::class, 'getMappedFieldName'))->getDeclaringClass()->getName() === self::class
+            && (new ReflectionMethod(static::class, 'mapField'))->getDeclaringClass()->getName() === self::class
+            && (new ReflectionMethod(static::class, 'snakeToCamel'))->getDeclaringClass()->getName() === self::class;
         $this->paginationExecutor = new PaginationExecutor();
         $this->overridesFetchResults = new ReflectionMethod(static::class, 'fetchResults')
             ->getDeclaringClass()->getName() !== self::class;
@@ -140,12 +148,18 @@ abstract class DataFetcher
      */
     protected function transformData(array $data, ?object $query): array
     {
-        return $this->rowMapper->transform(
-            $data,
-            $query,
-            $this->getMappedFieldName(...),
-            $this->mapField(...),
-        );
+        if ($this->usesDefaultFieldHooks && $this->casters === []) {
+            return $this->rowMapper->transform($data, $this->fieldMapping, $this->autoMapToCamelCase);
+        }
+
+        // Dispatch the existing virtual hooks in their original order.
+        $transformed = [];
+        foreach ($data as $key => $value) {
+            $mappedKey = $this->getMappedFieldName($key);
+            $transformed[$mappedKey] = $this->mapField($key, $value, $data, $query);
+        }
+
+        return $transformed;
     }
 
     /**
@@ -190,7 +204,7 @@ abstract class DataFetcher
             $value = $this->rowMapper->cast($originalKey, $this->casters[$originalKey], $value);
         }
 
-        $mapper = $this->rowMapper->mapperFor($originalKey);
+        $mapper = $this->resolvedMappers[$originalKey] ?? null;
 
         return $mapper === null ? $value : $this->{$mapper}($value, $data, $query);
     }
@@ -203,7 +217,7 @@ abstract class DataFetcher
      */
     protected function snakeToCamel(string $string): string
     {
-        return lcfirst(str_replace('_', '', ucwords($string, '_')));
+        return RowMapper::snakeToCamel($string);
     }
 
     /**

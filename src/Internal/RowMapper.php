@@ -7,44 +7,58 @@ namespace Componenta\Cycle\Internal;
 use Closure;
 use Componenta\Caster\CasterProviderInterface;
 use RuntimeException;
+use TypeError;
 
 /**
- * Row transformation and caster resolution.
+ * Maps rows with the default field policy and resolves registered casters.
  *
- * Mapper calls are dispatched by DataFetcher so protected extension methods
- * retain their original visibility and late binding.
+ * Dispatch of overridable protected hooks stays in DataFetcher.
  *
  * @internal
  */
 final readonly class RowMapper
 {
-    /** @var array<string, string> */
-    private array $methods;
+    public function __construct(private ?CasterProviderInterface $casterProvider) {}
 
-    /** @param list<string> $methods Methods visible in the fetcher's scope. */
-    public function __construct(
-        private ?CasterProviderInterface $casterProvider,
-        array $methods,
-        Closure $camelToSnake,
-    ) {
+    /**
+     * @param list<string> $methods Methods visible in the fetcher's scope.
+     * @return array<string, string>
+     */
+    public static function discoverMethods(array $methods, Closure $camelToSnake): array
+    {
         $resolved = [];
         foreach ($methods as $method) {
             if (str_starts_with($method, 'map') && $method !== 'mapField') {
                 $resolved[$camelToSnake(lcfirst(substr($method, 3)))] = $method;
             }
         }
-        $this->methods = $resolved;
+        return $resolved;
     }
 
-    public function transform(array $data, ?object $query, Closure $fieldName, Closure $fieldValue): array
+    /**
+     * Map an ordinary row without allocating callbacks or calling extension
+     * hooks. Only used when the default hooks are active and no casters or
+     * custom mapper methods are configured.
+     */
+    public function transform(array $data, array $fieldMapping, bool $autoMap): array
     {
         $transformed = [];
         foreach ($data as $key => $value) {
-            $mappedKey = $fieldName($key);
-            $transformed[$mappedKey] = $fieldValue($key, $value, $data, $query);
+            if (!is_string($key)) {
+                throw new TypeError('Database field names must be strings.');
+            }
+            $mappedKey = $fieldMapping[$key] ?? ($autoMap ? self::snakeToCamel($key) : $key);
+            if (!is_string($mappedKey)) {
+                throw new TypeError('Mapped database field names must be strings.');
+            }
+            $transformed[$mappedKey] = $value;
         }
-
         return $transformed;
+    }
+
+    public static function snakeToCamel(string $string): string
+    {
+        return lcfirst(str_replace('_', '', ucwords($string, '_')));
     }
 
     public function cast(string $field, string $casterName, mixed $value): mixed
@@ -67,10 +81,5 @@ final readonly class RowMapper
         }
 
         return $caster->cast($value);
-    }
-
-    public function mapperFor(string $field): ?string
-    {
-        return $this->methods[$field] ?? null;
     }
 }
