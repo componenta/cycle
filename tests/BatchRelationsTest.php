@@ -9,6 +9,7 @@ use Componenta\Config\Environment;
 use Componenta\Cycle\ConfigProvider;
 use Componenta\Cycle\DataFetcher;
 use Componenta\DI\ContainerFactory;
+use Cycle\Database\DatabaseInterface;
 use Cycle\Database\DatabaseManager;
 use Cycle\Database\Query\SelectQuery;
 use PHPUnit\Framework\TestCase;
@@ -28,6 +29,8 @@ final class BatchRelationsTest extends TestCase
         $db->execute("INSERT INTO records VALUES (1, 7), (2, 7), (3, NULL)");
         $db->execute("INSERT INTO owners VALUES (7, 'Alice')");
 
+        $logger = new RelationQueryLogger();
+        $db->getDriver(DatabaseInterface::READ)->setLogger($logger);
         $fetcher = new CustomRelationNamingFetcher($db);
         self::assertSame([
             ['id' => 1, 'owner_id' => 7, 'custom_owner' => 'Alice'],
@@ -35,6 +38,7 @@ final class BatchRelationsTest extends TestCase
             ['id' => 3, 'owner_id' => null, 'custom_owner' => null],
         ], $fetcher());
         self::assertSame(2, $fetcher->transformed);
+        self::assertCount(2, $logger->queries, 'Repeated foreign keys must be queried only once.');
     }
 
     public function testLoadsAllRelationTypesAcrossLargeBatches(): void
@@ -60,9 +64,12 @@ final class BatchRelationsTest extends TestCase
         $db->execute($sequence . 'INSERT INTO record_tags SELECT i, i FROM seq');
         $db->execute('INSERT INTO records VALUES (1102, NULL)');
 
+        $logger = new RelationQueryLogger();
+        $db->getDriver(DatabaseInterface::READ)->setLogger($logger);
         $rows = (new BatchRecordsFetcher($db))();
 
         self::assertCount(1102, $rows);
+        self::assertCount(10, $logger->queries, 'One root query and three bounded queries per relation type.');
         foreach (array_slice($rows, 0, 1101) as $index => $row) {
             $id = $index + 1;
             self::assertSame([
@@ -77,6 +84,29 @@ final class BatchRelationsTest extends TestCase
             'id' => 1102, 'ownerId' => null, 'owner' => null, 'children' => [], 'tags' => [],
         ], $rows[1101]);
     }
+
+    public function testNoRelatedQueriesAreExecutedWithoutAnyUsableKeys(): void
+    {
+        $composition = (new ConfigFactory())->create(
+            new Environment(['DB_DRIVER' => 'sqlite', 'DB_NAME' => ':memory:']),
+            new ConfigProvider(),
+        );
+        $db = (new ContainerFactory())->create($composition->config, $composition->dependencies)
+            ->get(DatabaseManager::class)->database();
+        $db->execute('CREATE TABLE records (id INTEGER, owner_id INTEGER)');
+        $db->execute('INSERT INTO records VALUES (NULL, NULL)');
+
+        // Deliberately do not create the related tables: an unnecessary query
+        // would fail as well as exceed the query budget.
+        $logger = new RelationQueryLogger();
+        $db->getDriver(DatabaseInterface::READ)->setLogger($logger);
+
+        self::assertSame([
+            ['id' => null, 'ownerId' => null, 'owner' => null, 'children' => [], 'tags' => []],
+        ], (new BatchRecordsFetcher($db))());
+        self::assertCount(1, $logger->queries);
+    }
+
 }
 
 final class BatchRecordsFetcher extends DataFetcher
@@ -139,5 +169,20 @@ final class CustomRelationNamingFetcher extends DataFetcher
                 return $row['name'];
             },
         );
+    }
+}
+
+
+/** Records successful SQL reads, without affecting their execution. */
+final class RelationQueryLogger extends \Psr\Log\AbstractLogger
+{
+    /** @var list<string> */
+    public array $queries = [];
+
+    public function log($level, string|\Stringable $message, array $context = []): void
+    {
+        if ($level === \Psr\Log\LogLevel::INFO && str_starts_with(ltrim((string) $message), 'SELECT')) {
+            $this->queries[] = (string) $message;
+        }
     }
 }
