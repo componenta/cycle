@@ -13,7 +13,14 @@ final readonly class PaginationFilter implements FilterInterface
     public function __construct(
         private int $limit = 10,
         private int $offset = 0,
-    ) {}
+    ) {
+        if ($this->limit < 1) {
+            throw new \InvalidArgumentException('Pagination limit must be positive.');
+        }
+        if ($this->offset < 0) {
+            throw new \InvalidArgumentException('Pagination offset must be non-negative.');
+        }
+    }
 
     public function apply(SelectQuery $query): SelectQuery
     {
