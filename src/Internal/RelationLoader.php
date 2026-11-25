@@ -43,7 +43,7 @@ final readonly class RelationLoader
             return;
         }
 
-        [$ids] = $this->collectIds($rows, $foreignKey);
+        [$ids, , $hasRepeatedKeys] = $this->collectIds($rows, $foreignKey);
 
         if ($ids === []) {
             foreach ($results as &$result) {
@@ -79,9 +79,14 @@ final readonly class RelationLoader
                 $fk = self::streamKey($fk);
             }
             $related = $fk !== null ? ($indexed[$fk] ?? null) : null;
-            $result[$key] = $related !== null && $transform !== null
-                ? $transform($related)
-                : $related;
+            if ($related !== null && $transform !== null) {
+                // Shared rows need independent streams for each callback.
+                if ($hasRepeatedKeys) {
+                    $related = self::copyStreams($related);
+                }
+                $related = $transform($related);
+            }
+            $result[$key] = $related;
         }
     }
 
@@ -233,7 +238,7 @@ final readonly class RelationLoader
     }
 
     /**
-     * @return array{0: list<mixed>, 1: bool}
+     * @return array{0: list<mixed>, 1: bool, 2: bool}
      */
     private function collectIds(array $rows, string $column): array
     {
@@ -251,7 +256,9 @@ final readonly class RelationLoader
             }
             $ids[] = $id;
         }
+        $count = count($ids);
         $ids = array_values(array_unique($ids));
+        $hasRepeatedKeys = count($ids) !== $count;
 
         // A DBAL Parameter array infers each child's type independently.
         // Preserve the binary type explicitly for a stream-backed key column.
@@ -259,7 +266,48 @@ final readonly class RelationLoader
             $ids = array_map(static fn (string $id): Parameter => new Parameter($id, PDO::PARAM_LOB), $ids);
         }
 
-        return [$ids, $binary];
+        return [$ids, $binary, $hasRepeatedKeys];
+    }
+
+    /** @param array<string, mixed> $row */
+    private static function copyStreams(array $row): array
+    {
+        foreach ($row as $column => $value) {
+            if (!is_resource($value) || get_resource_type($value) !== 'stream') {
+                continue;
+            }
+            $position = ftell($value);
+            if ($position === false || !stream_get_meta_data($value)['seekable']) {
+                throw new InvalidArgumentException('A shared relation stream must be seekable.');
+            }
+
+            // Large values spill to disk instead of duplicating PHP strings.
+            $copy = fopen('php://temp', 'w+b');
+            if ($copy === false) {
+                throw new \RuntimeException('Unable to create a temporary relation stream.');
+            }
+
+            try {
+                try {
+                    if (fseek($value, 0) !== 0 || stream_copy_to_stream($value, $copy) === false
+                        || fseek($copy, $position) !== 0
+                    ) {
+                        throw new \RuntimeException('Unable to copy a shared relation stream.');
+                    }
+                } finally {
+                    if (fseek($value, $position) !== 0) {
+                        throw new \RuntimeException('Unable to restore a shared relation stream position.');
+                    }
+                }
+            } catch (\Throwable $error) {
+                fclose($copy);
+                throw $error;
+            }
+
+            $row[$column] = $copy;
+        }
+
+        return $row;
     }
 
     /**
