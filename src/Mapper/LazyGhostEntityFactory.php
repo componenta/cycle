@@ -53,6 +53,9 @@ class LazyGhostEntityFactory
     /** @var \WeakMap<RelationMap, array<class-string, list<\ReflectionProperty>>>|null */
     private ?\WeakMap $extractableByMap = null;
 
+    /** @var array<class-string, bool> */
+    private array $dynamicPropertySupport = [];
+
     public function __construct()
     {
         $this->pendingRefs = new \WeakMap();
@@ -101,6 +104,16 @@ class LazyGhostEntityFactory
 
             if ($relation !== null && $value instanceof ReferenceInterface) {
                 $prop = $this->getProperty($reflection, $property);
+
+                if ($prop === null && $this->allowsDynamicProperties($reflection)
+                    && $this->findDeclaredProperty($reflection, $property) === null
+                ) {
+                    // An absent dynamic property cannot be marked lazy. Resolve
+                    // it for the assignment phase, after pending refs are saved.
+                    unset($pending[$property]);
+                    $scalarData[$property] = $relation->collect($relation->resolve($value, true));
+                    continue;
+                }
 
                 // A previously hydrated property is no longer lazy, even
                 // when other properties keep the entity itself uninitialized.
@@ -183,6 +196,15 @@ class LazyGhostEntityFactory
             }
         }
 
+        if ($this->supportsDynamicProperties($entity)) {
+            $relations = $relMap->getRelations();
+            foreach ($this->dynamicValues($entity) as $name => $value) {
+                if (!isset($relations[$name]) && !array_key_exists($name, $result)) {
+                    $result[$name] = $value;
+                }
+            }
+        }
+
         return $result;
     }
 
@@ -199,6 +221,7 @@ class LazyGhostEntityFactory
         $result = [];
         $pending = $this->pendingRefs[$entity] ?? [];
         $reflection = $this->getReflection($entity::class);
+        $dynamic = null;
 
         foreach (array_keys($relMap->getRelations()) as $name) {
             if (isset($pending[$name])) {
@@ -209,6 +232,12 @@ class LazyGhostEntityFactory
             $prop = $this->getProperty($reflection, $name);
 
             if ($prop === null) {
+                if ($this->supportsDynamicProperties($entity)) {
+                    $dynamic ??= $this->dynamicValues($entity);
+                    if (array_key_exists($name, $dynamic)) {
+                        $result[$name] = $dynamic[$name];
+                    }
+                }
                 continue;
             }
             if ($prop->isLazy($entity)) {
@@ -369,18 +398,47 @@ class LazyGhostEntityFactory
         return null;
     }
 
+    private function supportsDynamicProperties(object $entity): bool
+    {
+        return $this->dynamicPropertySupport[$entity::class]
+            ?? $this->allowsDynamicProperties($this->getReflection($entity::class));
+    }
+
+    /** @return array<string, mixed> */
+    private function dynamicValues(object $entity): array
+    {
+        $reflection = $this->getReflection($entity::class);
+        $result = [];
+
+        // Raw storage inspection does not invoke getters or initialize ghosts.
+        foreach (get_mangled_object_vars($entity) as $name => $value) {
+            if (is_string($name) && !str_starts_with($name, "\0")
+                && $this->findDeclaredProperty($reflection, $name) === null
+            ) {
+                $result[$name] = $value;
+            }
+        }
+
+        return $result;
+    }
+
     private function allowsDynamicProperties(\ReflectionClass $reflection): bool
     {
-        if ($reflection->getName() === \stdClass::class || $reflection->isSubclassOf(\stdClass::class)) {
-            return true;
+        $class = $reflection->getName();
+        if (isset($this->dynamicPropertySupport[$class])) {
+            return $this->dynamicPropertySupport[$class];
+        }
+
+        if ($class === \stdClass::class || $reflection->isSubclassOf(\stdClass::class)) {
+            return $this->dynamicPropertySupport[$class] = true;
         }
 
         for ($current = $reflection; $current !== false; $current = $current->getParentClass()) {
             if ($current->getAttributes(\AllowDynamicProperties::class) !== []) {
-                return true;
+                return $this->dynamicPropertySupport[$class] = true;
             }
         }
 
-        return false;
+        return $this->dynamicPropertySupport[$class] = false;
     }
 }

@@ -142,6 +142,51 @@ final class LazyGhostEntityFactoryTest extends TestCase {
         self::assertSame(['related' => $related], $factory->extractRelations($map, $entity));
     }
 
+    public function testStdClassRoundTripsDynamicScalarAndRelationFields(): void
+    {
+        $related = new \stdClass();
+        $reference = $this->createStub(\Cycle\ORM\Reference\ReferenceInterface::class);
+        $relation = $this->createMock(ActiveRelationInterface::class);
+        $relation->expects(self::once())->method('resolve')->with($reference, true)->willReturn($related);
+        $relation->method('collect')->willReturnArgument(0);
+        $map = $this->relationMap(true, $relation);
+        $factory = new LazyGhostEntityFactory();
+        $entity = $factory->create($map, \stdClass::class);
+
+        $factory->upgrade($map, $entity, ['id' => 3, 'label' => null, 'related' => $reference]);
+
+        self::assertSame(3, $entity->id);
+        self::assertSame($related, $entity->related);
+        self::assertSame(['id' => 3, 'label' => null], $factory->extractData($map, $entity));
+        self::assertSame(['related' => $related], $factory->extractRelations($map, $entity));
+        self::assertSame(['id' => 3, 'label' => null, 'related' => $related], $factory->extractAll($map, $entity));
+
+        $entity->label = 'updated';
+        self::assertSame(['id' => 3, 'label' => 'updated'], $factory->extractData($map, $entity));
+    }
+
+    public function testDynamicExtractionPreservesRawFieldsAndDoesNotInitializePendingRelations(): void
+    {
+        $reference = $this->createStub(\Cycle\ORM\Reference\ReferenceInterface::class);
+        $relation = $this->createMock(ActiveRelationInterface::class);
+        $relation->expects(self::never())->method('resolve');
+        $map = $this->relationMap(true, $relation);
+        $factory = new LazyGhostEntityFactory();
+        $entity = $factory->create($map, DynamicHookEntity::class);
+        $factory->upgrade($map, $entity, ['id' => 5, 'name' => 'stored', 'related' => $reference]);
+
+        self::assertSame(['id' => 5, 'name' => 'stored'], $factory->extractData($map, $entity));
+        self::assertSame(['related' => $reference], $factory->extractRelations($map, $entity));
+
+        $plain = new DynamicHookEntity();
+        $plain->id = 6;
+        $plain->name = 'another';
+        $plain->extra = 'dynamic';
+        $plain->related = null;
+        self::assertSame(['id' => 6, 'name' => 'another', 'extra' => 'dynamic'], $factory->extractData($map, $plain));
+        self::assertSame(['related' => null], $factory->extractRelations($map, $plain));
+    }
+
     public function testPropertyCacheHonorsTheCurrentRelationMap(): void {
         $withRelation = $this->relationMap(true);
         $withoutRelation = $this->relationMap(false);
@@ -325,4 +370,18 @@ final class ReadonlyRelationEntity
 {
     public int $id;
     public readonly ?object $related;
+}
+
+
+#[\AllowDynamicProperties]
+final class DynamicHookEntity
+{
+    public int $id;
+    public string $name {
+        get => strtoupper($this->name);
+    }
+    public string $computed {
+        get => throw new \LogicException('Virtual properties must not be evaluated by extraction.');
+    }
+    public ?object $related;
 }
