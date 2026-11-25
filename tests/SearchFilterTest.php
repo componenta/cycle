@@ -13,7 +13,6 @@ use Componenta\DI\ContainerFactory;
 use Cycle\Database\DatabaseInterface;
 use Cycle\Database\DatabaseManager;
 use Cycle\Database\Injection\Fragment;
-use PHPUnit\Framework\Assert;
 
 function searchFilterDatabase(bool $useEnvironment = true): DatabaseInterface
 {
@@ -31,7 +30,7 @@ function searchFilterDatabase(bool $useEnvironment = true): DatabaseInterface
         ->get(DatabaseManager::class)->database();
 }
 
-it('sql server and other dialects search preserves grouping and bound patterns', function (
+it('preserves grouped search conditions and bound patterns on supported databases', function (
     string $value,
     LikeMode $mode,
     array $expected,
@@ -46,7 +45,7 @@ it('sql server and other dialects search preserves grouping and bound patterns',
 
     $rows = (new SearchFilter(['first_name', 'last_name'], $value, $mode))->apply($query)->fetchAll();
 
-    Assert::assertSame($expected, array_map('intval', array_column($rows, 'id')));
+    expect(array_map('intval', array_column($rows, 'id')))->toBe($expected);
 })->with(static function (): iterable {
     yield 'exact case-insensitive' => ['ALPHA', LikeMode::Exact, [1, 2]];
     yield 'contains' => ['LPH', LikeMode::Contains, [1, 2, 4]];
@@ -56,7 +55,7 @@ it('sql server and other dialects search preserves grouping and bound patterns',
     yield 'SQL LIKE wildcards' => ['ALPH%', LikeMode::Exact, [1, 2, 4]];
 });
 
-it('sqlite matches identical non ascii values without applying php case folding', function (): void {
+it('matches identical non-ASCII values on SQLite without PHP case folding', function (): void {
     $db = searchFilterDatabase(false);
     $query = $db->select('id')->from(new Fragment(
         '(SELECT 1 AS id, ? AS name UNION ALL SELECT 2, ?) AS items',
@@ -65,10 +64,10 @@ it('sqlite matches identical non ascii values without applying php case folding'
     ))->orderBy('id');
 
     $rows = (new SearchFilter(['name'], 'Ångström', LikeMode::Exact))->apply($query)->fetchAll();
-    Assert::assertSame([['id' => 1]], $rows);
+    expect($rows)->toBe([['id' => 1]]);
 });
 
-it('sql server and other dialects quote unicode column names', function (): void {
+it('quotes Unicode column names on every supported database', function (): void {
     $db = searchFilterDatabase();
     $quoted = $db->getDriver()->getQueryCompiler()->quoteIdentifier('имя_поля');
     foreach (['имя_поля', 'items.имя_поля'] as $column) {
@@ -76,11 +75,11 @@ it('sql server and other dialects quote unicode column names', function (): void
             "(SELECT 1 AS id, 'Alpha' AS $quoted UNION ALL SELECT 2, 'Beta') AS items",
         ));
         $rows = (new SearchFilter([$column], 'ALPHA', LikeMode::Exact))->apply($query)->fetchAll();
-        Assert::assertSame([1], array_map('intval', array_column($rows, 'id')));
+        expect(array_map('intval', array_column($rows, 'id')))->toBe([1]);
     }
 });
 
-it('unicode expressions preserve configured table prefixes and aliases', function (): void {
+it('preserves configured table prefixes and aliases in Unicode expressions', function (): void {
     $db = searchFilterDatabase(false)->withPrefix('tenant_');
     $db->execute('CREATE TABLE tenant_records (id INTEGER, "имя_поля" TEXT)');
     $db->execute("INSERT INTO tenant_records VALUES (1, 'Alpha'), (2, 'Beta')");
@@ -91,11 +90,11 @@ it('unicode expressions preserve configured table prefixes and aliases', functio
     ] as [$table, $column]) {
         $query = $db->select('id')->from($table);
         $rows = (new SearchFilter([$column], 'ALPHA', LikeMode::Exact))->apply($query)->fetchAll();
-        Assert::assertSame([['id' => 1]], $rows);
+        expect($rows)->toBe([['id' => 1]]);
     }
 });
 
-it('prefixed database does not prefix structured subquery aliases', function (): void {
+it('does not prefix structured subquery aliases', function (): void {
     $db = searchFilterDatabase(false)->withPrefix('tenant_');
     $db->execute('CREATE TABLE tenant_records (id INTEGER, name TEXT, "имя_поля" TEXT, "дата" TEXT)');
     $db->execute("INSERT INTO tenant_records VALUES (1, 'Alpha', 'Alpha', '2025-02-05'), (2, 'Beta', 'Beta', '2025-02-06')");
@@ -104,11 +103,11 @@ it('prefixed database does not prefix structured subquery aliases', function ():
         $source = $db->select('id', 'name', 'имя_поля', 'дата')->from('records');
         $query = $db->select('id')->from(new \Cycle\Database\Injection\SubQuery($source, 'items'));
         $rows = (new SearchFilter([$column], 'ALPHA', LikeMode::Exact))->apply($query)->fetchAll();
-        Assert::assertSame([['id' => 1]], $rows);
+        expect($rows)->toBe([['id' => 1]]);
     }
 
     $source = $db->select('id', 'дата')->from('records');
     $query = $db->select('id')->from(new \Cycle\Database\Injection\SubQuery($source, 'items'));
     $filter = new \Componenta\Cycle\Filter\DateTimeFilter('items.дата', new \DateTimeImmutable('2025-02-05'));
-    Assert::assertSame([['id' => 1]], $filter->apply($query)->fetchAll());
+    expect($filter->apply($query)->fetchAll())->toBe([['id' => 1]]);
 });

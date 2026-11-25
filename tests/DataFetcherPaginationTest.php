@@ -48,16 +48,16 @@ function dataFetcherPaginationDatabase(): DatabaseInterface
         ->get(DatabaseManager::class)->database();
 }
 
-it('result transformations are preserved with and without total', function (int $offset, array $expected, bool $hasNext, bool $materialize): void {
+it('preserves result transformations with and without totals', function (int $offset, array $expected, bool $hasNext, bool $materialize): void {
     $db = dataFetcherPaginationDatabase();
     $source = $db->select('id')->from(new Fragment('(SELECT 1 AS id UNION ALL SELECT 2) AS items'))->orderBy('id');
     $fetcher = new ResultTransformingPaginationFetcher($db, $source, $materialize);
 
     foreach ([new CountedPage(1, $offset), new Page(1, $offset), new CountedPage(1, $offset)] as $query) {
         $page = $fetcher($query);
-        Assert::assertSame($expected, $page->results);
-        Assert::assertSame($hasNext, $page->hasNextPage);
-        Assert::assertSame($query instanceof CountedPage ? 2 : null, $page->totalCount);
+        expect($page->results)->toBe($expected);
+        expect($page->hasNextPage)->toBe($hasNext);
+        expect($page->totalCount)->toBe($query instanceof CountedPage ? 2 : null);
     }
 })->with(static function (): iterable {
     foreach ([false, true] as $materialize) {
@@ -84,19 +84,19 @@ it('nested fetches preserve outer pagination', function (bool $throw): void {
         try {
             $nested = $fetcher(new Page(1, 0));
             expect($throw)->toBeFalse();
-            Assert::assertSame([['label' => 'item 1']], $nested->results);
+            expect($nested->results)->toBe([['label' => 'item 1']]);
             expect($nested->hasNextPage)->toBeTrue();
         } catch (\RuntimeException $caught) {
             expect($throw)->toBeTrue();
-            Assert::assertSame($failure, $caught);
+            expect($caught)->toBe($failure);
         }
     };
 
     $page = $fetcher($outerQuery);
-    Assert::assertSame([['label' => 'item 2']], $page->results);
+    expect($page->results)->toBe([['label' => 'item 2']]);
     expect($page->hasNextPage)->toBeFalse();
     $fetcher->beforeResults = null;
-    Assert::assertTrue($fetcher(new Page(1, 0))->hasNextPage);
+    expect($fetcher(new Page(1, 0))->hasNextPage)->toBeTrue();
     expect($fetcher($outerQuery)->hasNextPage)->toBeFalse();
 })->with(static function (): iterable {
     yield 'successful nested call' => [false];
@@ -116,9 +116,9 @@ it('concurrent fetches keep their own pagination', function (): void {
     $last->resume();
     $first->resume();
 
-    Assert::assertSame([['label' => 'item 2']], $last->getReturn()->results);
+    expect($last->getReturn()->results)->toBe([['label' => 'item 2']]);
     expect($last->getReturn()->hasNextPage)->toBeFalse();
-    Assert::assertSame([['label' => 'item 1']], $first->getReturn()->results);
+    expect($first->getReturn()->results)->toBe([['label' => 'item 1']]);
     expect($first->getReturn()->hasNextPage)->toBeTrue();
 });
 
@@ -131,10 +131,10 @@ it('cloned fetcher does not inherit an active pagination hint in the same fiber'
 
     $expected = dataFetcherPaginationDriverRows($db, [['id' => 9]]);
     $fetcher->beforeResults = static function (object $current) use ($fetcher, $single, $query, $expected): void {
-        Assert::assertSame($query, $current);
+        expect($current)->toBe($query);
         $cloned = clone $fetcher;
         $page = $cloned->fetchDirect($single, $query);
-        Assert::assertSame($expected, $page->results);
+        expect($page->results)->toBe($expected);
         expect($page->hasNextPage)->toBeFalse();
     };
 
@@ -142,7 +142,7 @@ it('cloned fetcher does not inherit an active pagination hint in the same fiber'
     $fiber->start();
     $page = $fiber->getReturn();
 
-    Assert::assertSame([['label' => 'item 1']], $page->results);
+    expect($page->results)->toBe([['label' => 'item 1']]);
     expect($page->hasNextPage)->toBeTrue();
 });
 
@@ -158,8 +158,8 @@ it('total count counts distinct result rows', function (bool $join, int $limit, 
     $fetcher = new PaginationFetcher($db, $select);
 
     $page = $fetcher(new CountedPage($limit, $offset));
-    Assert::assertSame($expected, $page->results);
-    Assert::assertSame(2, $page->totalCount);
+    expect($page->results)->toBe($expected);
+    expect($page->totalCount)->toBe(2);
 })->with(static function (): iterable {
     yield 'all distinct rows' => [false, 10, 0, [['category' => 'one'], ['category' => 'two']]];
     yield 'with a join' => [true, 10, 0, [['category' => 'one'], ['category' => 'two']]];
@@ -176,11 +176,11 @@ it('total count preserves grouping having and bound parameters', function (): vo
 
     $page = $fetcher(new CountedPage());
     Assert::assertSame(dataFetcherPaginationDriverRows($db, [['category' => 'one', 'quantity' => 2]]), $page->results);
-    Assert::assertSame(1, $page->totalCount);
+    expect($page->totalCount)->toBe(1);
     $select->having(new Fragment('COUNT(*)'), '>', 3);
     $empty = $fetcher(new CountedPage());
-    Assert::assertSame([], $empty->results);
-    Assert::assertSame(0, $empty->totalCount);
+    expect($empty->results)->toBe([]);
+    expect($empty->totalCount)->toBe(0);
 });
 
 it('total count preserves all selected fields', function (): void {
@@ -191,7 +191,7 @@ it('total count preserves all selected fields', function (): void {
     Assert::assertSame(dataFetcherPaginationDriverRows($db, [['id' => 1, '_row_count' => 73]]), $fetcher(new Page())->results);
     $page = $fetcher(new CountedPage());
     Assert::assertSame(dataFetcherPaginationDriverRows($db, [['id' => 1, '_row_count' => 73]]), $page->results);
-    Assert::assertSame(1, $page->totalCount);
+    expect($page->totalCount)->toBe(1);
 });
 
 it('total count accepts duplicate output column names', function (array $columns): void {
@@ -199,15 +199,15 @@ it('total count accepts duplicate output column names', function (array $columns
     $source = $db->select($columns)->from(new Fragment('(SELECT 1 AS id) AS a, (SELECT 2 AS id) AS b'));
     // PDO does not guarantee which duplicate name survives associative fetching.
     $expected = $source->fetchAll();
-    Assert::assertCount(1, $expected);
-    Assert::assertSame(['id'], array_keys($expected[0]));
+    expect($expected)->toHaveCount(1);
+    expect(array_keys($expected[0]))->toBe(['id']);
     Assert::assertContains($expected[0]['id'], [$db->getType() === 'SQLServer' ? '1' : 1, $db->getType() === 'SQLServer' ? '2' : 2]);
     $fetcher = new PaginationFetcher($db, $source);
 
-    Assert::assertSame($expected, $fetcher(new Page())->results);
+    expect($fetcher(new Page())->results)->toBe($expected);
     $page = $fetcher(new CountedPage());
-    Assert::assertSame($expected, $page->results);
-    Assert::assertSame(1, $page->totalCount);
+    expect($page->results)->toBe($expected);
+    expect($page->totalCount)->toBe(1);
 })->with(static function (): iterable {
     yield 'qualified names' => [['a.id', 'b.id']];
     yield 'stars' => [['a.*', 'b.*']];
@@ -225,7 +225,7 @@ it('total counts aggregate result rows', function (bool $empty, int $offset, arr
     foreach ([new Page(1, $offset), new CountedPage(1, $offset)] as $query) {
         $page = $fetcher($query);
         Assert::assertSame(dataFetcherPaginationDriverRows($db, $expected), $page->results);
-        Assert::assertSame($query instanceof CountedPage ? 1 : null, $page->totalCount);
+        expect($page->totalCount)->toBe($query instanceof CountedPage ? 1 : null);
         expect($page->hasNextPage)->toBeFalse();
     }
 })->with(static function (): iterable {
@@ -247,10 +247,10 @@ it('total counts all union arms', function (): void {
 
     $first = $fetcher(new CountedPage(1));
     Assert::assertSame(dataFetcherPaginationDriverRows($db, [['id' => 2]]), $first->results);
-    Assert::assertSame(2, $first->totalCount);
+    expect($first->totalCount)->toBe(2);
     $second = $fetcher(new CountedPage(1, 1));
     Assert::assertSame(dataFetcherPaginationDriverRows($db, [['id' => 3]]), $second->results);
-    Assert::assertSame(2, $second->totalCount);
+    expect($second->totalCount)->toBe(2);
 });
 
 it('pagination does not evaluate fields outside the page', function (): void {
@@ -264,7 +264,7 @@ it('pagination does not evaluate fields outside the page', function (): void {
 
     $page = $fetcher(new CountedPage(1));
     Assert::assertSame(dataFetcherPaginationDriverRows($db, [['value' => 1]]), $page->results);
-    Assert::assertSame(4, $page->totalCount);
+    expect($page->totalCount)->toBe(4);
     $page = $fetcher(new Page(1));
     Assert::assertSame(dataFetcherPaginationDriverRows($db, [['value' => 1]]), $page->results);
     expect($page->totalCount)->toBeNull();
@@ -285,9 +285,9 @@ it('postgres set returning projection preserves next page and total', function (
         $first = $fetcher($query);
         Assert::assertSame(dataFetcherPaginationDriverRows($db, [['value' => 1]]), $first->results);
         expect($first->hasNextPage)->toBeTrue();
-        Assert::assertSame($query instanceof CountedPage ? 3 : null, $first->totalCount);
+        expect($first->totalCount)->toBe($query instanceof CountedPage ? 3 : null);
     }
-    Assert::assertFalse($fetcher(new Page(1, 2))->hasNextPage);
+    expect($fetcher(new Page(1, 2))->hasNextPage)->toBeFalse();
 });
 
 it('database manager preserves bound union parameters across repeated reads', function (): void {
@@ -305,8 +305,8 @@ it('database manager preserves bound union parameters across repeated reads', fu
         foreach ([new Page(1, 1), new CountedPage(1, 1)] as $query) {
             $page = $fetcher($query);
             Assert::assertSame(dataFetcherPaginationDriverRows($db, [['id' => 3]]), $page->results);
-            Assert::assertSame($hasNext, $page->hasNextPage, sprintf('upperBound=%d, query=%s', $upperBound, $query::class));
-            Assert::assertSame($query instanceof CountedPage ? $total : null, $page->totalCount);
+            expect($page->hasNextPage)->toBe($hasNext, sprintf('upperBound=%d, query=%s', $upperBound, $query::class));
+            expect($page->totalCount)->toBe($query instanceof CountedPage ? $total : null);
         }
     }
 });
@@ -319,9 +319,9 @@ it('page flags agree with and without an exposed total', function (int $limit, i
     $fetcher = $customFetch ? new CustomPaginationFetcher($db, $source) : new PaginationFetcher($db, $source);
     foreach ([new Page($limit, $offset), new CountedPage($limit, $offset)] as $query) {
         $page = $fetcher($query);
-        Assert::assertSame($expected, $page->results);
-        Assert::assertSame($hasNext, $page->hasNextPage);
-        Assert::assertSame($query instanceof CountedPage ? 3 : null, $page->totalCount);
+        expect($page->results)->toBe($expected);
+        expect($page->hasNextPage)->toBe($hasNext);
+        expect($page->totalCount)->toBe($query instanceof CountedPage ? 3 : null);
     }
 })->with(static function (): iterable {
     yield 'first page' => [2, 0, [['category' => 'a'], ['category' => 'b']], true];
@@ -406,11 +406,11 @@ it('configured my sql preserves parameterized select unions', function (): void 
         $page = $fetcher($query);
         Assert::assertSame(dataFetcherPaginationDriverRows($db, [['id' => 2]]), $page->results);
         expect($page->hasNextPage)->toBeTrue();
-        Assert::assertSame($query instanceof CountedPage ? 2 : null, $page->totalCount);
+        expect($page->totalCount)->toBe($query instanceof CountedPage ? 2 : null);
     }
 });
 
-it('sql server and other dialects use only necessary pagination queries', function (): void {
+it('uses only necessary pagination queries on every supported database', function (): void {
     $db = dataFetcherPaginationDatabase();
     $driver = $db->getDriver(DatabaseInterface::READ);
     $db->query('SELECT 1')->close();
@@ -436,16 +436,16 @@ it('sql server and other dialects use only necessary pagination queries', functi
         $fetcher = new PaginationFetcher($db, $source);
 
         $page = $fetcher(new CountedPage(1));
-        Assert::assertSame([['id' => $expectedId, 'category' => 'a']], $page->results);
-        Assert::assertSame(2, $page->totalCount);
+        expect($page->results)->toBe([['id' => $expectedId, 'category' => 'a']]);
+        expect($page->totalCount)->toBe(2);
         expect($page->hasNextPage)->toBeTrue();
-        Assert::assertCount(2, $logger->queries, 'Known projection width must not require metadata SQL.');
+        expect($logger->queries)->toHaveCount(2, 'Known projection width must not require metadata SQL.');
 
         $logger->queries = [];
         $page = $fetcher(new Page(1));
-        Assert::assertSame([['id' => $expectedId, 'category' => 'a']], $page->results);
+        expect($page->results)->toBe([['id' => $expectedId, 'category' => 'a']]);
         expect($page->hasNextPage)->toBeTrue();
-        Assert::assertCount(2, $logger->queries, 'An existence probe must not request metadata SQL.');
+        expect($logger->queries)->toHaveCount(2, 'An existence probe must not request metadata SQL.');
 
         foreach (['*', new Fragment('id, label')] as $projection) {
             $logger->queries = [];
@@ -454,8 +454,8 @@ it('sql server and other dialects use only necessary pagination queries', functi
             ))->orderBy('id');
             $page = (new PaginationFetcher($db, $source))(new CountedPage(1));
 
-            Assert::assertSame([['id' => $expectedId, 'label' => 'a']], $page->results);
-            Assert::assertSame(2, $page->totalCount);
+            expect($page->results)->toBe([['id' => $expectedId, 'label' => 'a']]);
+            expect($page->totalCount)->toBe(2);
             Assert::assertCount(
                 in_array($db->getType(), ['MySQL', 'SQLServer'], true) ? 3 : 2,
                 $logger->queries,
@@ -467,7 +467,7 @@ it('sql server and other dialects use only necessary pagination queries', functi
     }
 });
 
-it('sql server unordered distinct pages keep the original projection and cardinality', function (): void {
+it('preserves the projection and cardinality of unordered distinct SQL Server pages', function (): void {
     if (!in_array(getenv('CYCLE_TEST_DB_DRIVER'), ['sqlserver', 'mssql'], true)) {
         Assert::markTestSkipped('Set CYCLE_TEST_DB_DRIVER=sqlserver to test unordered SQL Server pagination.');
     }
@@ -480,17 +480,17 @@ it('sql server unordered distinct pages keep the original projection and cardina
 
     foreach ([new Page(1), new CountedPage(1)] as $query) {
         $first = $fetcher($query);
-        Assert::assertSame([['category' => 'one']], $first->results);
+        expect($first->results)->toBe([['category' => 'one']]);
         expect($first->hasNextPage)->toBeTrue();
-        Assert::assertSame($query instanceof CountedPage ? 2 : null, $first->totalCount);
+        expect($first->totalCount)->toBe($query instanceof CountedPage ? 2 : null);
     }
 
     $last = $fetcher(new Page(1, 1));
-    Assert::assertSame([['category' => 'two']], $last->results);
+    expect($last->results)->toBe([['category' => 'two']]);
     expect($last->hasNextPage)->toBeFalse();
 });
 
-it('sql server unordered pages do not expose technical columns', function (): void {
+it('does not expose technical columns on unordered SQL Server pages', function (): void {
     if (!in_array(getenv('CYCLE_TEST_DB_DRIVER'), ['sqlserver', 'mssql'], true)) {
         Assert::markTestSkipped('This scenario requires SQL Server.');
     }
@@ -501,13 +501,13 @@ it('sql server unordered pages do not expose technical columns', function (): vo
 
     foreach ([new Page(2), new CountedPage(2)] as $query) {
         $page = $fetcher($query);
-        Assert::assertCount(2, $page->results);
+        expect($page->results)->toHaveCount(2);
         foreach ($page->results as $row) {
-            Assert::assertSame(['id'], array_keys($row));
+            expect(array_keys($row))->toBe(['id']);
         }
-        Assert::assertEqualsCanonicalizing([7, 8], array_column($page->results, 'id'));
+        expect(array_column($page->results, 'id'))->toEqualCanonicalizing([7, 8]);
         expect($page->hasNextPage)->toBeFalse();
-        Assert::assertSame($query instanceof CountedPage ? 2 : null, $page->totalCount);
+        expect($page->totalCount)->toBe($query instanceof CountedPage ? 2 : null);
     }
 });
 

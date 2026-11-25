@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace Componenta\Cycle\Tests;
 
 use Componenta\Cycle\Typecast\EnumTypecast;
-use PHPUnit\Framework\Assert;
 
 enum NumericStatus: int
 {
@@ -33,19 +32,19 @@ function enumTypecastTypecast(): EnumTypecast
 
 it('casts integer values returned as strings by database drivers', function (): void {
     $typecast = enumTypecastTypecast();
-    Assert::assertSame(['status' => NumericStatus::Enabled], $typecast->cast(['status' => '1']));
-    Assert::assertSame(['status' => NumericStatus::Disabled], $typecast->cast(['status' => '0']));
-    Assert::assertSame(['status' => NumericStatus::Negative], $typecast->cast(['status' => '-1']));
-    Assert::assertSame(['status' => -1], $typecast->uncast(['status' => NumericStatus::Negative]));
-    Assert::assertSame(['status' => null], $typecast->cast(['status' => null]));
+    expect($typecast->cast(['status' => '1']))->toBe(['status' => NumericStatus::Enabled]);
+    expect($typecast->cast(['status' => '0']))->toBe(['status' => NumericStatus::Disabled]);
+    expect($typecast->cast(['status' => '-1']))->toBe(['status' => NumericStatus::Negative]);
+    expect($typecast->uncast(['status' => NumericStatus::Negative]))->toBe(['status' => -1]);
+    expect($typecast->cast(['status' => null]))->toBe(['status' => null]);
 });
 
 it('string backed enum preserves its exact value after rule reconfiguration', function (): void {
     $typecast = enumTypecastTypecast();
     $typecast->setRules(['status' => StringStatus::class]);
 
-    Assert::assertSame(['status' => StringStatus::Enabled], $typecast->cast(['status' => '1']));
-    Assert::assertSame(['status' => '1'], $typecast->uncast(['status' => StringStatus::Enabled]));
+    expect($typecast->cast(['status' => '1']))->toBe(['status' => StringStatus::Enabled]);
+    expect($typecast->uncast(['status' => StringStatus::Enabled]))->toBe(['status' => '1']);
 });
 
 it('rejects an enum of another type when casting', function (): void {

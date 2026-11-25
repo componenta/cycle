@@ -12,7 +12,6 @@ use Componenta\DI\ContainerFactory;
 use Cycle\Database\DatabaseManager;
 use Cycle\Database\Injection\Fragment;
 use Cycle\Database\Query\SelectQuery;
-use PHPUnit\Framework\Assert;
 
 it('repeated fetches read the current relation selection', function (): void {
     $composition = (new ConfigFactory())->create(
@@ -23,14 +22,14 @@ it('repeated fetches read the current relation selection', function (): void {
     $fetcher = new RelatedRowsFetcher($container->get(DatabaseManager::class)->database());
     $query = (object) ['with' => 'tags'];
 
-    Assert::assertSame([['id' => 1, 'relations' => ['tags']]], $fetcher($query));
+    expect($fetcher($query))->toBe([['id' => 1, 'relations' => ['tags']]]);
     $query->with = ['category'];
-    Assert::assertSame([['id' => 1, 'relations' => ['category']]], $fetcher($query));
+    expect($fetcher($query))->toBe([['id' => 1, 'relations' => ['category']]]);
     $query->with = null;
-    Assert::assertSame([['id' => 1, 'relations' => []]], $fetcher($query));
-    Assert::assertSame([['id' => 1, 'relations' => []]], $fetcher(new class { public ?string $with; }));
-    Assert::assertSame([['id' => 1, 'relations' => []]], $fetcher(new class { private string $with = 'tags'; }));
-    Assert::assertSame([['id' => 1, 'relations' => []]], $fetcher(new \stdClass()));
+    expect($fetcher($query))->toBe([['id' => 1, 'relations' => []]]);
+    expect($fetcher(new class { public ?string $with; }))->toBe([['id' => 1, 'relations' => []]]);
+    expect($fetcher(new class { private string $with = 'tags'; }))->toBe([['id' => 1, 'relations' => []]]);
+    expect($fetcher(new \stdClass()))->toBe([['id' => 1, 'relations' => []]]);
 });
 
 final class RelatedRowsFetcher extends DataFetcher

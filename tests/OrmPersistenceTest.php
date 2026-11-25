@@ -17,7 +17,7 @@ use Cycle\ORM\ORMInterface;
 use Cycle\ORM\SchemaInterface;
 use PHPUnit\Framework\Assert;
 
-it('binary uuid survives orm insert lookup update and delete', function (): void {
+it('round trips binary UUIDs through ORM inserts, lookups, updates and deletes', function (): void {
     $settings = ['DB_DRIVER' => 'sqlite', 'DB_NAME' => ':memory:'];
     foreach (['DRIVER', 'NAME', 'HOST', 'PORT', 'USER', 'PASSWORD', 'SCHEMA', 'TRUST_SERVER_CERTIFICATE'] as $key) {
         $value = getenv('CYCLE_TEST_DB_' . $key);
@@ -68,25 +68,25 @@ it('binary uuid survives orm insert lookup update and delete', function (): void
         $key = $mapper->uncast(['id' => $uuid])['id'];
         $otherKey = $mapper->uncast(['id' => $other])['id'];
         $record = $repository->findByPK($key);
-        Assert::assertInstanceOf(BinaryRecord::class, $record);
+        expect($record)->toBeInstanceOf(BinaryRecord::class);
         Assert::assertSame($uuid->toString(), $record->id->toString());
-        Assert::assertSame('first', $record->label);
-        Assert::assertSame('second', $repository->findByPK($otherKey)->label);
+        expect($record->label)->toBe('first');
+        expect($repository->findByPK($otherKey)->label)->toBe('second');
 
         $record->label = 'updated';
         $em->persist($record)->run();
         $em->clean(true);
         $record = $repository->findByPK($key);
-        Assert::assertInstanceOf(BinaryRecord::class, $record);
-        Assert::assertSame('updated', $record->label);
+        expect($record)->toBeInstanceOf(BinaryRecord::class);
+        expect($record->label)->toBe('updated');
         Assert::assertSame($uuid->toString(), $record->id->toString());
-        Assert::assertSame('second', $repository->findByPK($otherKey)->label);
+        expect($repository->findByPK($otherKey)->label)->toBe('second');
 
         $em->delete($record)->run();
         $em->clean(true);
         expect($repository->findByPK($key))->toBeNull();
-        Assert::assertSame('second', $repository->findByPK($otherKey)->label);
-        Assert::assertSame(1, (int) $db->select('id')->from('cycle_test_binary_records')->count());
+        expect($repository->findByPK($otherKey)->label)->toBe('second');
+        expect((int) $db->select('id')->from('cycle_test_binary_records')->count())->toBe(1);
     } finally {
         $db->execute('DROP TABLE cycle_test_binary_records');
     }

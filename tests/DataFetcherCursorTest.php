@@ -42,8 +42,8 @@ it('query caching preserves unbuffered pages and their relations', function (): 
         try {
             $first = $fetcher(new CursorPage());
             $second = $fetcher(new CursorPage());
-            Assert::assertSame([['id' => 1, 'relation' => 7]], $first->results);
-            Assert::assertSame([['id' => 1, 'relation' => 7]], $second->results);
+            expect($first->results)->toBe([['id' => 1, 'relation' => 7]]);
+            expect($second->results)->toBe([['id' => 1, 'relation' => 7]]);
         } finally {
             $db->getDriver()->disconnect();
         }
@@ -59,9 +59,9 @@ it('row failure preserves the exception and connection', function (?object $quer
             $fetcher($query);
             Assert::fail('The row conversion must fail.');
         } catch (RuntimeException $caught) {
-            Assert::assertSame($failure, $caught);
+            expect($caught)->toBe($failure);
         }
-        Assert::assertSame([['id' => 1, 'relation' => 7]], (new CursorFetcher($db))(new CursorPage())->results);
+        expect((new CursorFetcher($db))(new CursorPage())->results)->toBe([['id' => 1, 'relation' => 7]]);
     } finally {
         $db->getDriver()->disconnect();
     }

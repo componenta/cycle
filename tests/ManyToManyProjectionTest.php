@@ -31,7 +31,7 @@ function manyToManyProjectionDatabase(): DatabaseInterface
         ->get(DatabaseManager::class)->database();
 }
 
-it('pivot key never overwrites related projection', function (array $columns, bool $transform): void {
+it('preserves related projections when pivot keys collide with column names', function (array $columns, bool $transform): void {
     $db = manyToManyProjectionDatabase();
     try {
         $db->execute('CREATE TABLE cycle_test_mtm_roots (id INTEGER)');
@@ -54,7 +54,7 @@ it('pivot key never overwrites related projection', function (array $columns, bo
         $db->getDriver(DatabaseInterface::READ)->setLogger($logger);
         $fetcher = new PivotProjectionFetcher($db, $columns, $transform);
         $rows = $fetcher();
-        Assert::assertSame(2, $logger->reads);
+        expect($logger->reads)->toBe(2);
 
         // SQL does not specify the order of related rows in this helper.
         $id = static fn (int $value): int|string => $db->getType() === 'SQLServer' ? (string) $value : $value;
@@ -65,12 +65,12 @@ it('pivot key never overwrites related projection', function (array $columns, bo
             $second = ['value' => 'second:original-b'];
         }
 
-        Assert::assertCount(3, $rows);
+        expect($rows)->toHaveCount(3);
         Assert::assertSame(['id' => $id(1), 'tags' => [$first]], $rows[0]);
         Assert::assertSame($id(2), $rows[1]['id']);
-        Assert::assertEqualsCanonicalizing([$first, $second], $rows[1]['tags']);
+        expect($rows[1]['tags'])->toEqualCanonicalizing([$first, $second]);
         Assert::assertSame(['id' => $id(3), 'tags' => []], $rows[2]);
-        Assert::assertSame($transform ? 3 : 0, $fetcher->transformCalls);
+        expect($fetcher->transformCalls)->toBe($transform ? 3 : 0);
     } finally {
         foreach (['cycle_test_mtm_pivot', 'cycle_test_mtm_tags', 'cycle_test_mtm_roots'] as $table) {
             $db->execute('DROP TABLE IF EXISTS ' . $table);

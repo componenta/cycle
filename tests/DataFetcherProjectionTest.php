@@ -14,7 +14,6 @@ use Componenta\Cycle\Query\SortableInterface;
 use Componenta\DI\ContainerFactory;
 use Cycle\Database\DatabaseManager;
 use Cycle\Database\DatabaseInterface;
-use PHPUnit\Framework\Assert;
 
 final class ProjectionQuery implements SelectableInterface, SortableInterface
 {
@@ -60,26 +59,20 @@ function dataFetcherProjectionDatabase(): DatabaseInterface
     return $db;
 }
 
-it('public projection defaults to allowed fields and maps sorting aliases', function (): void {
+it('defaults public projections to allowed fields and maps sorting aliases', function (): void {
     $fetch = new PublicProjectionFetcher(dataFetcherProjectionDatabase());
 
-    Assert::assertSame(
-        [['id' => 2, 'title' => 'two'], ['id' => 1, 'title' => 'one']],
-        $fetch(new ProjectionQuery(orderBy: ['identifier' => Direction::DESC])),
-    );
-    Assert::assertSame(
-        [['id' => 1], ['id' => 2]],
-        $fetch(new ProjectionQuery(['identifier'], ['identifier' => Direction::ASC])),
-    );
+    expect($fetch(new ProjectionQuery(orderBy: ['identifier' => Direction::DESC])))->toBe([['id' => 2, 'title' => 'two'], ['id' => 1, 'title' => 'one']]);
+    expect($fetch(new ProjectionQuery(['identifier'], ['identifier' => Direction::ASC])))->toBe([['id' => 1], ['id' => 2]]);
 });
 
-it('public projection rejects unlisted columns', function (): void {
+it('rejects unlisted public projection columns', function (): void {
     $fetch = new PublicProjectionFetcher(dataFetcherProjectionDatabase());
     $this->expectException(\InvalidArgumentException::class);
     $fetch(new ProjectionQuery(['secret']));
 });
 
-it('public projection rejects unlisted sort columns', function (): void {
+it('rejects unlisted public sort columns', function (): void {
     $fetch = new PublicProjectionFetcher(dataFetcherProjectionDatabase());
     $this->expectException(\InvalidArgumentException::class);
     $fetch(new ProjectionQuery(orderBy: ['secret' => Direction::ASC]));

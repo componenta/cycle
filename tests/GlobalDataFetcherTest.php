@@ -8,7 +8,6 @@ use Componenta\Cycle\ConfigProvider;
 use Componenta\Cycle\DataFetcher;
 use Componenta\DI\ContainerFactory;
 use Cycle\Database\DatabaseManager;
-use PHPUnit\Framework\Assert;
 
 final class GlobalRecordFetcher extends DataFetcher
 {
@@ -18,7 +17,7 @@ final class GlobalRecordFetcher extends DataFetcher
     }
 }
 
-it('table name is derived from a class in the global namespace', function (): void {
+it('derives a table name from a class in the global namespace', function (): void {
     $composition = (new ConfigFactory())->create(
         new Environment(['DB_DRIVER' => 'sqlite', 'DB_NAME' => ':memory:']),
         new ConfigProvider(),
@@ -28,5 +27,5 @@ it('table name is derived from a class in the global namespace', function (): vo
     $db->execute('CREATE TABLE global_records (id INTEGER)');
     $db->execute('INSERT INTO global_records VALUES (1)');
 
-    Assert::assertSame([['id' => 1]], (new GlobalRecordFetcher($db))());
+    expect((new GlobalRecordFetcher($db))())->toBe([['id' => 1]]);
 });

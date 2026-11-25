@@ -8,7 +8,6 @@ use Componenta\Caster\CasterInterface;
 use Componenta\Caster\CasterProviderInterface;
 use Componenta\Cycle\DataFetcher;
 use Cycle\Database\DatabaseInterface;
-use PHPUnit\Framework\Assert;
 
 it('mapping preserves custom hooks and caster order', function (): void {
     $caster = $this->createStub(CasterInterface::class);
@@ -20,11 +19,11 @@ it('mapping preserves custom hooks and caster order', function (): void {
     $query = (object) ['increment' => 2];
     $row = ['total_value' => '5', 'hidden_value' => 'hidden', 'first_name' => 'Alice'];
 
-    Assert::assertSame([
+    expect($fetcher($row, $query))->toBe([
         'amount' => 7,
         'customName' => 'ALICE',
         'rawTotal' => '5',
-    ], $fetcher($row, $query));
+    ]);
 });
 
 it('mapping uses current configuration and clone state', function (): void {
@@ -38,8 +37,8 @@ it('mapping uses current configuration and clone state', function (): void {
 
     $row = ['total_value' => '5'];
     $query = (object) ['increment' => 1];
-    Assert::assertSame(['amount' => 6, 'rawTotal' => '5'], $fetcher($row, $query));
-    Assert::assertSame(['newAmount' => 6, 'rawTotal' => '5'], $clone($row, $query));
+    expect($fetcher($row, $query))->toBe(['amount' => 6, 'rawTotal' => '5']);
+    expect($clone($row, $query))->toBe(['newAmount' => 6, 'rawTotal' => '5']);
 });
 
 it('default mapping uses current field and caster configuration', function (): void {
@@ -50,20 +49,20 @@ it('default mapping uses current field and caster configuration', function (): v
     $fetcher = new PlainMappingFetcher($this->createStub(DatabaseInterface::class), $provider);
     $row = ['total_value' => '5', 'first_name' => 'Alice', 'hidden_value' => 'hidden'];
 
-    Assert::assertSame(['amount' => '5', 'firstName' => 'Alice'], $fetcher($row));
+    expect($fetcher($row))->toBe(['amount' => '5', 'firstName' => 'Alice']);
     $fetcher->enableAmountCaster();
-    Assert::assertSame(['amount' => 5, 'firstName' => 'Alice'], $fetcher($row));
+    expect($fetcher($row))->toBe(['amount' => 5, 'firstName' => 'Alice']);
 });
 
 it('cached default names preserve mutable policy and varied projections', function (): void {
     $fetcher = new MutableDefaultMappingFetcher($this->createStub(DatabaseInterface::class));
 
-    Assert::assertSame(['firstName' => 'Alice'], $fetcher(['first_name' => 'Alice']));
+    expect($fetcher(['first_name' => 'Alice']))->toBe(['firstName' => 'Alice']);
     $fetcher->rename('first_name', 'displayName');
-    Assert::assertSame(['displayName' => 'Alice'], $fetcher(['first_name' => 'Alice']));
+    expect($fetcher(['first_name' => 'Alice']))->toBe(['displayName' => 'Alice']);
     $fetcher->resetMapping();
     $fetcher->autoMap(false);
-    Assert::assertSame(['first_name' => 'Alice'], $fetcher(['first_name' => 'Alice']));
+    expect($fetcher(['first_name' => 'Alice']))->toBe(['first_name' => 'Alice']);
     $fetcher->autoMap(true);
 
     // More distinct names than the bounded cache can retain, including
@@ -77,18 +76,18 @@ it('cached default names preserve mutable policy and varied projections', functi
     $longName = str_repeat('x', 200);
     $row[$longName . '_value'] = 'long';
     $expected[$longName . 'Value'] = 'long';
-    Assert::assertSame($expected, $fetcher($row));
-    Assert::assertSame($expected, $fetcher($row));
+    expect($fetcher($row))->toBe($expected);
+    expect($fetcher($row))->toBe($expected);
 
     // Multiple names can map to one output key: preserve row order and
     // the original last-write-wins semantics.
-    Assert::assertSame(['firstName' => 'second'], $fetcher(['first_name' => 'first', 'firstName' => 'second']));
-    Assert::assertSame(['firstName' => 'Alice'], $fetcher(['first_name' => 'Alice']));
+    expect($fetcher(['first_name' => 'first', 'firstName' => 'second']))->toBe(['firstName' => 'second']);
+    expect($fetcher(['first_name' => 'Alice']))->toBe(['firstName' => 'Alice']);
 });
 
-it('overridden naming hook is not bypassed by default mapping', function (): void {
+it('honors overridden naming hooks during default mapping', function (): void {
     $fetcher = new CustomSnakeMappingFetcher($this->createStub(DatabaseInterface::class));
-    Assert::assertSame(['custom_first_name' => 'Alice'], $fetcher(['first_name' => 'Alice']));
+    expect($fetcher(['first_name' => 'Alice']))->toBe(['custom_first_name' => 'Alice']);
 });
 
 it('missing caster provider fails through public fetch', function (): void {

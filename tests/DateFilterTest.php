@@ -11,7 +11,6 @@ use Componenta\Cycle\Filter\DateFilter;
 use Componenta\DI\ContainerFactory;
 use Cycle\Database\DatabaseManager;
 use Cycle\Database\Injection\Fragment;
-use PHPUnit\Framework\Assert;
 
 it('end date includes fractional seconds but excludes the following day', function (): void {
     $composition = (new ConfigFactory())->create(
@@ -27,5 +26,5 @@ it('end date includes fractional seconds but excludes the following day', functi
 
     $result = (new DateFilter(['from' => '2026-11-25', 'to' => '2026-11-25']))->apply($query)->fetchAll();
 
-    Assert::assertSame([['id' => 1], ['id' => 3]], $result);
+    expect($result)->toBe([['id' => 1], ['id' => 3]]);
 });

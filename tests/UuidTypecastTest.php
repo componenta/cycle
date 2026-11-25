@@ -8,7 +8,6 @@ use Componenta\Cycle\Typecast\UuidTypecast;
 use Componenta\Identity\Uuid;
 use Componenta\Identity\UuidFactory;
 use Componenta\Identity\UuidFactoryInterface;
-use PHPUnit\Framework\Assert;
 
 it('accepts binary text hex and stream representations', function (): void {
     $typecast = new UuidTypecast(new UuidFactory());
@@ -21,8 +20,8 @@ it('accepts binary text hex and stream representations', function (): void {
     try {
         foreach ([$bytes, $text, '\\x' . bin2hex($bytes), $stream] as $value) {
             $uuid = $typecast->cast(['id' => $value])['id'];
-            Assert::assertSame($text, $uuid->toString());
-            Assert::assertSame(['id' => $bytes], $typecast->uncast(['id' => $uuid]));
+            expect($uuid->toString())->toBe($text);
+            expect($typecast->uncast(['id' => $uuid]))->toBe(['id' => $bytes]);
         }
     } finally {
         fclose($stream);
@@ -43,7 +42,7 @@ it('uses the injected factory for every database representation', function (): v
     rewind($stream);
     try {
         foreach ([$expected->bytes, $text, '\\x' . bin2hex($expected->bytes), $stream] as $value) {
-            Assert::assertSame($expected, $typecast->cast(['id' => $value])['id']);
+            expect($typecast->cast(['id' => $value])['id'])->toBe($expected);
         }
     } finally {
         fclose($stream);
@@ -64,7 +63,7 @@ it('rejects trailing payload in uuid stream', function (): void {
     }
 });
 
-it('rejects non string and non stream values', function (): void {
+it('rejects values other than strings and streams', function (): void {
     $typecast = new UuidTypecast(new UuidFactory());
     $typecast->setRules(['id' => 'uuid']);
 
@@ -72,12 +71,12 @@ it('rejects non string and non stream values', function (): void {
     $typecast->cast(['id' => []]);
 });
 
-it('preserves absent null and already casted values', function (): void {
+it('preserves absent, null and already converted UUID values', function (): void {
     $typecast = new UuidTypecast(new UuidFactory());
     $typecast->setRules(['id' => 'uuid']);
     $uuid = Uuid::fromString('018f0000-0000-7000-8000-000000000001');
 
-    Assert::assertSame([], $typecast->cast([]));
-    Assert::assertSame(['id' => null], $typecast->cast(['id' => null]));
-    Assert::assertSame(['id' => $uuid], $typecast->cast(['id' => $uuid]));
+    expect($typecast->cast([]))->toBe([]);
+    expect($typecast->cast(['id' => null]))->toBe(['id' => null]);
+    expect($typecast->cast(['id' => $uuid]))->toBe(['id' => $uuid]);
 });

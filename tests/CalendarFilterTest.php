@@ -17,7 +17,6 @@ use Cycle\Database\DatabaseManager;
 use Cycle\Database\Injection\Fragment;
 use DateTimeImmutable;
 use InvalidArgumentException;
-use PHPUnit\Framework\Assert;
 
 function calendarFilterDatabase(): DatabaseInterface
 {
@@ -35,7 +34,7 @@ function calendarFilterDatabase(): DatabaseInterface
         ->get(DatabaseManager::class)->database();
 }
 
-it('sql server and other dialects calendar filters', function (FilterInterface $filter, array $expected): void {
+it('applies calendar filters on every supported database', function (FilterInterface $filter, array $expected): void {
     $db = calendarFilterDatabase();
     $type = match ($db->getType()) {
         'SQLServer' => 'DATETIME2',
@@ -52,7 +51,7 @@ it('sql server and other dialects calendar filters', function (FilterInterface $
     ))->orderBy('id');
 
     $actual = $filter->apply($query)->fetchAll();
-    Assert::assertSame($expected, array_map('intval', array_column($actual, 'id')));
+    expect(array_map('intval', array_column($actual, 'id')))->toBe($expected);
 })->with(static function (): iterable {
     $date = new DateTimeImmutable('2025-02-05');
     yield 'date equality' => [new DateTimeFilter('created_at', $date), [3]];
@@ -67,7 +66,7 @@ it('sql server and other dialects calendar filters', function (FilterInterface $
     yield 'calendar range' => [new DateFilter(['from' => '2025-01-05', 'to' => '2025-02-05']), [2, 3]];
 });
 
-it('sql server and other dialects quote unicode calendar columns', function (): void {
+it('quotes Unicode calendar columns on every supported database', function (): void {
     $db = calendarFilterDatabase();
     $type = match ($db->getType()) {
         'SQLServer' => 'DATETIME2',
@@ -86,7 +85,7 @@ it('sql server and other dialects quote unicode calendar columns', function (): 
             "(SELECT 1 AS id, CAST('2025-02-05 12:00:00' AS $type) AS $quoted "
             . "UNION ALL SELECT 2, CAST('2025-01-01 12:00:00' AS $type)) AS items",
         ));
-        Assert::assertSame([1], array_map('intval', array_column($filter->apply($query)->fetchAll(), 'id')));
+        expect(array_map('intval', array_column($filter->apply($query)->fetchAll(), 'id')))->toBe([1]);
     }
 });
 
@@ -100,10 +99,10 @@ it('date range includes date only values on both boundaries', function (array $b
         . "UNION ALL SELECT 4, CAST(NULL AS $type)) AS items",
     ))->orderBy('id');
 
-    Assert::assertSame($expected, array_map('intval', array_column(
+    expect(array_map('intval', array_column(
         (new DateFilter($bounds))->apply($query)->fetchAll(),
         'id',
-    )));
+    )))->toBe($expected);
 })->with(static function (): iterable {
     yield 'from' => [['from' => '2025-02-05'], [2, 3]];
     yield 'to' => [['to' => '2025-02-05'], [1, 2]];

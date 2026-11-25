@@ -12,7 +12,6 @@ use Componenta\DI\ContainerFactory;
 use Cycle\Database\DatabaseInterface;
 use Cycle\Database\DatabaseManager;
 use Cycle\Database\Query\SelectQuery;
-use PHPUnit\Framework\Assert;
 
 it('belongs to preserves custom naming and row specific transformation', function (): void {
     $composition = (new ConfigFactory())->create(
@@ -29,13 +28,13 @@ it('belongs to preserves custom naming and row specific transformation', functio
     $logger = new RelationQueryLogger();
     $db->getDriver(DatabaseInterface::READ)->setLogger($logger);
     $fetcher = new CustomRelationNamingFetcher($db);
-    Assert::assertSame([
+    expect($fetcher())->toBe([
         ['id' => 1, 'owner_id' => 7, 'custom_owner' => 'Alice'],
         ['id' => 2, 'owner_id' => 7, 'custom_owner' => 'Alice'],
         ['id' => 3, 'owner_id' => null, 'custom_owner' => null],
-    ], $fetcher());
-    Assert::assertSame(2, $fetcher->transformed);
-    Assert::assertCount(2, $logger->queries, 'Repeated foreign keys must be queried only once.');
+    ]);
+    expect($fetcher->transformed)->toBe(2);
+    expect($logger->queries)->toHaveCount(2, 'Repeated foreign keys must be queried only once.');
 });
 
 it('loads all relation types across large batches', function (): void {
@@ -64,21 +63,21 @@ it('loads all relation types across large batches', function (): void {
     $db->getDriver(DatabaseInterface::READ)->setLogger($logger);
     $rows = (new BatchRecordsFetcher($db))();
 
-    Assert::assertCount(1102, $rows);
-    Assert::assertCount(10, $logger->queries, 'One root query and three bounded queries per relation type.');
+    expect($rows)->toHaveCount(1102);
+    expect($logger->queries)->toHaveCount(10, 'One root query and three bounded queries per relation type.');
     foreach (array_slice($rows, 0, 1101) as $index => $row) {
         $id = $index + 1;
-        Assert::assertSame([
+        expect($row)->toBe([
             'id' => $id,
             'ownerId' => $id,
             'owner' => ['id' => $id],
             'children' => [['id' => $id, 'record_id' => $id]],
             'tags' => [['id' => $id]],
-        ], $row);
+        ]);
     }
-    Assert::assertSame([
+    expect($rows[1101])->toBe([
         'id' => 1102, 'ownerId' => null, 'owner' => null, 'children' => [], 'tags' => [],
-    ], $rows[1101]);
+    ]);
 });
 
 it('no related queries are executed without any usable keys', function (): void {
@@ -96,10 +95,10 @@ it('no related queries are executed without any usable keys', function (): void 
     $logger = new RelationQueryLogger();
     $db->getDriver(DatabaseInterface::READ)->setLogger($logger);
 
-    Assert::assertSame([
+    expect((new BatchRecordsFetcher($db))())->toBe([
         ['id' => null, 'ownerId' => null, 'owner' => null, 'children' => [], 'tags' => []],
-    ], (new BatchRecordsFetcher($db))());
-    Assert::assertCount(1, $logger->queries);
+    ]);
+    expect($logger->queries)->toHaveCount(1);
 });
 
 final class BatchRecordsFetcher extends DataFetcher

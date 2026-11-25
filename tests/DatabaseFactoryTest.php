@@ -8,7 +8,6 @@ use Componenta\Cycle\Factory\DatabaseFactory;
 use Componenta\DI\ProxyFactory;
 use Cycle\Database\DatabaseInterface;
 use Cycle\Database\DatabaseProviderInterface;
-use PHPUnit\Framework\Assert;
 use Psr\Container\ContainerInterface;
 
 it('lazy factory supports alternative database implementations', function (): void {
@@ -20,5 +19,5 @@ it('lazy factory supports alternative database implementations', function (): vo
     $container->method('get')->willReturn($provider);
 
     $factory = new DatabaseFactory();
-    Assert::assertSame('custom', $factory->lazy($container, new ProxyFactory())->getName());
+    expect($factory->lazy($container, new ProxyFactory())->getName())->toBe('custom');
 });

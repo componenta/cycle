@@ -10,7 +10,7 @@ use Componenta\Cycle\Filter\{
     NotInFilter, NotNullFilter, NullFilter, OrderFilter, SearchFilter, SoftDeleteFilter
 };
 
-it('filters reject expressions as column names', function (string $filter, array $arguments): void {
+it('rejects expressions as column names in built-in filters', function (string $filter, array $arguments): void {
     $this->expectException(\InvalidArgumentException::class);
     new $filter(...$arguments);
 })->with(static function (): iterable {

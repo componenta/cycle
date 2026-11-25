@@ -128,3 +128,7 @@ protected function isBinaryRelationKey(string $column): bool
     return in_array($column, ['id', 'owner_id'], true);
 }
 ```
+
+## Running tests
+
+Install development dependencies with `composer install` and run `composer test`. The test suite uses Pest 4, with PHPUnit's strict assertions and test doubles where necessary. To run a focused set, use `composer test -- --filter 'pagination'`. SQLite is the default integration database; the CI matrix also runs the applicable tests on MySQL, PostgreSQL and SQL Server and verifies the lowest resolvable dependencies. The test configuration fails on warnings, risky tests and deprecations.

@@ -5,20 +5,19 @@ declare(strict_types=1);
 namespace Componenta\Cycle\Tests;
 
 use Componenta\Cycle\Result;
-use PHPUnit\Framework\Assert;
 
 it('reports size and empty state', function (): void {
     $result = new Result(['a', 'b'], 10);
 
     expect($result->isEmpty())->toBeFalse();
-    Assert::assertSame(2, $result->size());
-    Assert::assertSame(10, $result->count);
+    expect($result->size())->toBe(2);
+    expect($result->count)->toBe(10);
 });
 
-it('empty result', function (): void {
+it('reports an empty result', function (): void {
     $result = new Result([], null);
 
     expect($result->isEmpty())->toBeTrue();
-    Assert::assertSame(0, $result->size());
+    expect($result->size())->toBe(0);
     expect($result->count)->toBeNull();
 });

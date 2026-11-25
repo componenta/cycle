@@ -13,7 +13,6 @@ use Cycle\Database\DatabaseInterface;
 use Cycle\Database\DatabaseManager;
 use Cycle\Database\Injection\Parameter;
 use Cycle\Database\Query\SelectQuery;
-use PHPUnit\Framework\Assert;
 
 it('binary keys load all three relation types', function (bool $explicitBinary, int $additionalKeys): void {
     $settings = ['DB_DRIVER' => 'sqlite', 'DB_NAME' => ':memory:'];
@@ -60,7 +59,7 @@ it('binary keys load all three relation types', function (bool $explicitBinary, 
         if ($db->getType() === 'SQLite') {
             $statement = $db->query('SELECT DISTINCT typeof(id) FROM cycle_test_binary_roots');
             try {
-                Assert::assertSame($explicitBinary ? 'blob' : 'text', $statement->fetchColumn());
+                expect($statement->fetchColumn())->toBe($explicitBinary ? 'blob' : 'text');
             } finally {
                 $statement->close();
             }
@@ -125,8 +124,8 @@ it('binary keys load all three relation types', function (bool $explicitBinary, 
 
         $rows = (new BinaryRelationsFetcher($db, $explicitBinary))();
 
-        Assert::assertSame($expected, $rows);
-        Assert::assertSame($additionalKeys === 0 ? 4 : 7, $logger->reads);
+        expect($rows)->toBe($expected);
+        expect($logger->reads)->toBe($additionalKeys === 0 ? 4 : 7);
     } finally {
         foreach (['cycle_test_binary_pivot', 'cycle_test_binary_tags', 'cycle_test_binary_children',
             'cycle_test_binary_owners', 'cycle_test_binary_roots'] as $table) {
@@ -187,14 +186,14 @@ final class BinaryRelationsFetcher extends DataFetcher
             columns: ['label'], transform: static function (array $row) use ($postgres): string {
                 $key = $row['id'];
                 if ($postgres) {
-                    Assert::assertTrue(is_resource($key), 'Each invocation receives a live PostgreSQL bytea stream.');
-                    Assert::assertSame(0, ftell($key));
-                    Assert::assertSame(16, strlen(stream_get_contents($key)));
+                    expect(is_resource($key))->toBeTrue('Each invocation receives a live PostgreSQL bytea stream.');
+                    expect(ftell($key))->toBe(0);
+                    expect(strlen(stream_get_contents($key)))->toBe(16);
                     // Closing a callback's stream must not invalidate the next row.
                     fclose($key);
                 } else {
-                    Assert::assertIsString($key);
-                    Assert::assertSame(16, strlen($key));
+                    expect($key)->toBeString();
+                    expect(strlen($key))->toBe(16);
                 }
                 return $row['label'];
             });
@@ -202,8 +201,8 @@ final class BinaryRelationsFetcher extends DataFetcher
             columns: ['label'], transform: static function (array $row): string {
                 $key = $row['parent_id'];
                 if (is_resource($key)) {
-                    Assert::assertSame(0, ftell($key));
-                    Assert::assertSame(16, strlen(stream_get_contents($key)));
+                    expect(ftell($key))->toBe(0);
+                    expect(strlen(stream_get_contents($key)))->toBe(16);
                 }
                 return $row['label'];
             });

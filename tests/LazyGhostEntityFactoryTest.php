@@ -10,7 +10,6 @@ use Cycle\ORM\Relation\ActiveRelationInterface;
 use Cycle\ORM\RelationMap;
 use Cycle\ORM\Schema;
 use Cycle\ORM\SchemaInterface;
-use PHPUnit\Framework\Assert;
 
 final class HydratedEntity {
     public int $id;
@@ -50,19 +49,19 @@ function lazyGhostEntityFactoryRelationMap(\Closure $createStub, bool $withRelat
     return RelationMap::build($orm, 'record');
 }
 
-it('hydration preserves already loaded relations', function (?object $related): void {
+it('preserves already loaded relations during hydration', function (?object $related): void {
     $relations = lazyGhostEntityFactoryRelationMap($this->createStub(...), true);
     $factory = new LazyGhostEntityFactory();
     $entity = $factory->create($relations, HydratedEntity::class);
     $factory->upgrade($relations, $entity, ['id' => 1, 'related' => $related]);
-    Assert::assertSame(1, $entity->id);
-    Assert::assertSame($related, $entity->related);
+    expect($entity->id)->toBe(1);
+    expect($entity->related)->toBe($related);
 })->with(static function (): iterable {
     yield 'loaded object' => [new \stdClass()];
     yield 'loaded null' => [null];
 });
 
-it('scalar rehydration preserves a pending relation', function (): void {
+it('preserves a pending relation during scalar rehydration', function (): void {
     $related = new \stdClass();
     $relation = $this->createStub(ActiveRelationInterface::class);
     $relation->method('resolve')->willReturn($related);
@@ -75,11 +74,11 @@ it('scalar rehydration preserves a pending relation', function (): void {
 
     $factory->upgrade($map, $entity, ['id' => 2]);
 
-    Assert::assertSame(2, $entity->id);
-    Assert::assertSame($related, $entity->related);
+    expect($entity->id)->toBe(2);
+    expect($entity->related)->toBe($related);
 });
 
-it('loaded relation replaces a pending reference', function (): void {
+it('replaces a pending reference with a loaded relation', function (): void {
     $map = lazyGhostEntityFactoryRelationMap($this->createStub(...), true);
     $factory = new LazyGhostEntityFactory();
     $entity = $factory->create($map, HydratedEntity::class);
@@ -89,11 +88,11 @@ it('loaded relation replaces a pending reference', function (): void {
 
     $factory->upgrade($map, $entity, ['related' => $related]);
 
-    Assert::assertSame(['related' => $related], $factory->extractRelations($map, $entity));
-    Assert::assertSame($related, $entity->related);
+    expect($factory->extractRelations($map, $entity))->toBe(['related' => $related]);
+    expect($entity->related)->toBe($related);
 });
 
-it('new reference replaces an already loaded property on a partly lazy entity', function (): void {
+it('replaces an already loaded relation on a partly lazy entity', function (): void {
     $old = new \stdClass();
     $replacement = new \stdClass();
     $other = new \stdClass();
@@ -112,16 +111,16 @@ it('new reference replaces an already loaded property on a partly lazy entity', 
     $entity = $factory->create($map, TwoRelationsEntity::class);
 
     $factory->upgrade($map, $entity, ['id' => 1, 'related' => $old, 'other' => $otherReference]);
-    Assert::assertSame($old, $entity->related);
+    expect($entity->related)->toBe($old);
     $factory->upgrade($map, $entity, ['related' => $replacementReference]);
 
-    Assert::assertSame($replacement, $entity->related);
-    Assert::assertSame(['related' => $replacement, 'other' => $otherReference], $factory->extractRelations($map, $entity));
-    Assert::assertSame($other, $entity->other);
-    Assert::assertSame(['related' => $replacement, 'other' => $other], $factory->extractRelations($map, $entity));
+    expect($entity->related)->toBe($replacement);
+    expect($factory->extractRelations($map, $entity))->toBe(['related' => $replacement, 'other' => $otherReference]);
+    expect($entity->other)->toBe($other);
+    expect($factory->extractRelations($map, $entity))->toBe(['related' => $replacement, 'other' => $other]);
 });
 
-it('eager relation resolution sees the latest scalar and pending relation state', function (): void {
+it('exposes current scalar values and pending references during eager resolution', function (): void {
     $old = new \stdClass();
     $replacement = new \stdClass();
     $newOther = new \stdClass();
@@ -137,10 +136,10 @@ it('eager relation resolution sees the latest scalar and pending relation state'
     $firstRelation = $this->createMock(ActiveRelationInterface::class);
     $firstRelation->expects($this->once())->method('resolve')->with($replacementReference, true)
         ->willReturnCallback(static function () use (&$entity, $newOther, $replacement): object {
-            Assert::assertSame(2, $entity->id);
+            expect($entity->id)->toBe(2);
             // Resolving this relation reenters the entity's initializer.
             // The initializer must see the new reference, never the old one.
-            Assert::assertSame($newOther, $entity->other);
+            expect($entity->other)->toBe($newOther);
             return $replacement;
         });
     $firstRelation->method('collect')->willReturnArgument(0);
@@ -153,12 +152,12 @@ it('eager relation resolution sees the latest scalar and pending relation state'
     // Deliberately put the eager relation first.
     $factory->upgrade($map, $entity, ['related' => $replacementReference, 'other' => $newReference, 'id' => 2]);
 
-    Assert::assertSame($replacement, $entity->related);
-    Assert::assertSame($newOther, $entity->other);
-    Assert::assertSame(['related' => $replacement, 'other' => $newOther], $factory->extractRelations($map, $entity));
+    expect($entity->related)->toBe($replacement);
+    expect($entity->other)->toBe($newOther);
+    expect($factory->extractRelations($map, $entity))->toBe(['related' => $replacement, 'other' => $newOther]);
 });
 
-it('initialized readonly relation does not resolve an unused reference', function (): void {
+it('does not resolve unused references for initialized readonly relations', function (): void {
     $relation = $this->createMock(ActiveRelationInterface::class);
     $relation->expects($this->never())->method('resolve');
     $map = lazyGhostEntityFactoryRelationMap($this->createStub(...), true, $relation);
@@ -169,11 +168,11 @@ it('initialized readonly relation does not resolve an unused reference', functio
 
     $factory->upgrade($map, $entity, ['related' => $this->createStub(\Cycle\ORM\Reference\ReferenceInterface::class)]);
 
-    Assert::assertSame($related, $entity->related);
-    Assert::assertSame(['related' => $related], $factory->extractRelations($map, $entity));
+    expect($entity->related)->toBe($related);
+    expect($factory->extractRelations($map, $entity))->toBe(['related' => $related]);
 });
 
-it('std class round trips dynamic scalar and relation fields', function (): void {
+it('round trips dynamic scalar and relation fields on stdClass', function (): void {
     $related = new \stdClass();
     $reference = $this->createStub(\Cycle\ORM\Reference\ReferenceInterface::class);
     $relation = $this->createMock(ActiveRelationInterface::class);
@@ -185,17 +184,17 @@ it('std class round trips dynamic scalar and relation fields', function (): void
 
     $factory->upgrade($map, $entity, ['id' => 3, 'label' => null, 'related' => $reference]);
 
-    Assert::assertSame(3, $entity->id);
-    Assert::assertSame($related, $entity->related);
-    Assert::assertSame(['id' => 3, 'label' => null], $factory->extractData($map, $entity));
-    Assert::assertSame(['related' => $related], $factory->extractRelations($map, $entity));
-    Assert::assertSame(['id' => 3, 'label' => null, 'related' => $related], $factory->extractAll($map, $entity));
+    expect($entity->id)->toBe(3);
+    expect($entity->related)->toBe($related);
+    expect($factory->extractData($map, $entity))->toBe(['id' => 3, 'label' => null]);
+    expect($factory->extractRelations($map, $entity))->toBe(['related' => $related]);
+    expect($factory->extractAll($map, $entity))->toBe(['id' => 3, 'label' => null, 'related' => $related]);
 
     $entity->label = 'updated';
-    Assert::assertSame(['id' => 3, 'label' => 'updated'], $factory->extractData($map, $entity));
+    expect($factory->extractData($map, $entity))->toBe(['id' => 3, 'label' => 'updated']);
 });
 
-it('dynamic extraction preserves raw fields and does not initialize pending relations', function (): void {
+it('extracts dynamic fields without initializing pending relations', function (): void {
     $reference = $this->createStub(\Cycle\ORM\Reference\ReferenceInterface::class);
     $relation = $this->createMock(ActiveRelationInterface::class);
     $relation->expects($this->never())->method('resolve');
@@ -204,42 +203,42 @@ it('dynamic extraction preserves raw fields and does not initialize pending rela
     $entity = $factory->create($map, DynamicHookEntity::class);
     $factory->upgrade($map, $entity, ['id' => 5, 'name' => 'stored', 'related' => $reference]);
 
-    Assert::assertSame(['id' => 5, 'name' => 'stored'], $factory->extractData($map, $entity));
-    Assert::assertSame(['related' => $reference], $factory->extractRelations($map, $entity));
+    expect($factory->extractData($map, $entity))->toBe(['id' => 5, 'name' => 'stored']);
+    expect($factory->extractRelations($map, $entity))->toBe(['related' => $reference]);
 
     $plain = new DynamicHookEntity();
     $plain->id = 6;
     $plain->name = 'another';
     $plain->extra = 'dynamic';
     $plain->related = null;
-    Assert::assertSame(['id' => 6, 'name' => 'another', 'extra' => 'dynamic'], $factory->extractData($map, $plain));
-    Assert::assertSame(['related' => null], $factory->extractRelations($map, $plain));
+    expect($factory->extractData($map, $plain))->toBe(['id' => 6, 'name' => 'another', 'extra' => 'dynamic']);
+    expect($factory->extractRelations($map, $plain))->toBe(['related' => null]);
 });
 
-it('property cache honors the current relation map', function (): void {
+it('honors the current relation map when extracting fields', function (): void {
     $withRelation = lazyGhostEntityFactoryRelationMap($this->createStub(...), true);
     $withoutRelation = lazyGhostEntityFactoryRelationMap($this->createStub(...), false);
     $entity = new HydratedEntity();
     $entity->id = 1;
     $entity->related = null;
     $factory = new LazyGhostEntityFactory();
-    Assert::assertSame(['id' => 1], $factory->extractData($withRelation, $entity));
-    Assert::assertSame(['id' => 1, 'related' => null], $factory->extractData($withoutRelation, $entity));
+    expect($factory->extractData($withRelation, $entity))->toBe(['id' => 1]);
+    expect($factory->extractData($withoutRelation, $entity))->toBe(['id' => 1, 'related' => null]);
 
     $entity->id = 2;
     $entity->related = new \stdClass();
-    Assert::assertSame(['id' => 2], $factory->extractData($withRelation, $entity));
-    Assert::assertSame(['id' => 2, 'related' => $entity->related], $factory->extractData($withoutRelation, $entity));
+    expect($factory->extractData($withRelation, $entity))->toBe(['id' => 2]);
+    expect($factory->extractData($withoutRelation, $entity))->toBe(['id' => 2, 'related' => $entity->related]);
 
     $other = new CollectionEntity();
     $other->id = 3;
     $other->related = [];
-    Assert::assertSame(['id' => 3], $factory->extractData($withRelation, $other));
-    Assert::assertSame(['id' => 3, 'related' => []], $factory->extractData($withoutRelation, $other));
-    Assert::assertSame(['id' => 2], $factory->extractData($withRelation, $entity));
+    expect($factory->extractData($withRelation, $other))->toBe(['id' => 3]);
+    expect($factory->extractData($withoutRelation, $other))->toBe(['id' => 3, 'related' => []]);
+    expect($factory->extractData($withRelation, $entity))->toBe(['id' => 2]);
 });
 
-it('extraction does not keep an unused relation map alive', function (): void {
+it('does not retain unused relation maps after extraction', function (): void {
     $factory = new LazyGhostEntityFactory();
     $map = lazyGhostEntityFactoryRelationMap($this->createStub(...), true);
     $reference = \WeakReference::create($map);
@@ -247,14 +246,14 @@ it('extraction does not keep an unused relation map alive', function (): void {
     $entity->id = 1;
     $entity->related = null;
 
-    Assert::assertSame(['id' => 1], $factory->extractData($map, $entity));
+    expect($factory->extractData($map, $entity))->toBe(['id' => 1]);
     unset($map);
     gc_collect_cycles();
 
     expect($reference->get())->toBeNull();
 });
 
-it('missing to many collection is initialized when no reference is pending', function (): void {
+it('initializes missing to-many collections when no reference is pending', function (): void {
     $relation = $this->createStub(\Cycle\ORM\Relation\HasMany::class);
     $relation->method('collect')->willReturn([]);
     $map = lazyGhostEntityFactoryRelationMap($this->createStub(...), true, $relation);
@@ -263,8 +262,8 @@ it('missing to many collection is initialized when no reference is pending', fun
 
     $factory->upgrade($map, $entity, ['id' => 1]);
 
-    Assert::assertSame([], $entity->related);
-    Assert::assertSame(['related' => []], $factory->extractRelations($map, $entity));
+    expect($entity->related)->toBe([]);
+    expect($factory->extractRelations($map, $entity))->toBe(['related' => []]);
 });
 
 it('hydrates and extracts private properties declared on an ancestor', function (): void {
@@ -274,8 +273,8 @@ it('hydrates and extracts private properties declared on an ancestor', function 
 
     $factory->upgrade($map, $entity, ['id' => 7, 'label' => 'stored']);
 
-    Assert::assertSame(7, $entity->id());
-    Assert::assertSame(['label' => 'stored', 'id' => 7], $factory->extractData($map, $entity));
+    expect($entity->id())->toBe(7);
+    expect($factory->extractData($map, $entity))->toBe(['label' => 'stored', 'id' => 7]);
 });
 
 it('propagates errors from explicit dynamic property handling', function (): void {
@@ -295,8 +294,8 @@ it('ignores schema only fields without creating dynamic properties', function ()
 
     $factory->upgrade($map, $entity, ['id' => 1, 'schema_only' => 2]);
 
-    Assert::assertSame(1, $entity->id);
-    Assert::assertFalse(property_exists($entity, 'schema_only'));
+    expect($entity->id)->toBe(1);
+    expect(property_exists($entity, 'schema_only'))->toBeFalse();
 });
 
 it('extraction returns stored values rather than computed getter values', function (): void {
@@ -306,11 +305,11 @@ it('extraction returns stored values rather than computed getter values', functi
 
     $factory->upgrade($map, $entity, ['name' => 'stored']);
 
-    Assert::assertSame('STORED', $entity->name);
-    Assert::assertSame(['name' => 'stored'], $factory->extractData($map, $entity));
+    expect($entity->name)->toBe('STORED');
+    expect($factory->extractData($map, $entity))->toBe(['name' => 'stored']);
 });
 
-it('readonly hydration and extraction do not resolve pending relations', function (): void {
+it('preserves pending relations during readonly hydration and extraction', function (): void {
     $related = new \stdClass();
     $reference = $this->createStub(\Cycle\ORM\Reference\ReferenceInterface::class);
     $relation = $this->createMock(ActiveRelationInterface::class);
@@ -322,11 +321,11 @@ it('readonly hydration and extraction do not resolve pending relations', functio
 
     $factory->upgrade($map, $entity, ['id' => 7, 'related' => $reference]);
 
-    Assert::assertSame(7, $entity->id);
-    Assert::assertSame(['id' => 7, 'label' => 'default'], $factory->extractData($map, $entity));
-    Assert::assertSame(['related' => $reference], $factory->extractRelations($map, $entity));
-    Assert::assertSame($related, $entity->related);
-    Assert::assertSame(['related' => $related], $factory->extractRelations($map, $entity));
+    expect($entity->id)->toBe(7);
+    expect($factory->extractData($map, $entity))->toBe(['id' => 7, 'label' => 'default']);
+    expect($factory->extractRelations($map, $entity))->toBe(['related' => $reference]);
+    expect($entity->related)->toBe($related);
+    expect($factory->extractRelations($map, $entity))->toBe(['related' => $related]);
 });
 
 final class CollectionEntity

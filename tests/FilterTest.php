@@ -9,11 +9,10 @@ use Componenta\Cycle\Filter\LimitFilter;
 use Componenta\Cycle\Filter\OrderFilter;
 use Componenta\Cycle\Filter\PaginationFilter;
 use Componenta\Cycle\Query\SortableInterface;
-use PHPUnit\Framework\Assert;
 
-it('direction opposite', function (): void {
-    Assert::assertSame(Direction::DESC, Direction::ASC->opposite());
-    Assert::assertSame(Direction::ASC, Direction::DESC->opposite());
+it('returns the opposite sort direction', function (): void {
+    expect(Direction::ASC->opposite())->toBe(Direction::DESC);
+    expect(Direction::DESC->opposite())->toBe(Direction::ASC);
 });
 
 it('limit filter rejects negative limit', function (): void {

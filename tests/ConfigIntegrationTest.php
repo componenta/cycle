@@ -25,14 +25,14 @@ function configIntegrationContainer(array $additionalConfig = [], array $environ
 
 it('creates database from the configured environment', function (): void {
     $database = configIntegrationContainer()->get(DatabaseManager::class)->database();
-    Assert::assertSame('default', $database->getName());
-    Assert::assertSame(1, (int) $database->query('SELECT 1 AS value')->fetch()['value']);
+    expect($database->getName())->toBe('default');
+    expect((int) $database->query('SELECT 1 AS value')->fetch()['value'])->toBe(1);
 });
 
 it('creates schema and migration settings from runtime config', function (): void {
     $container = configIntegrationContainer();
-    Assert::assertSame([], iterator_to_array($container->get(SchemaInterface::class)->getRoles()));
-    Assert::assertSame('ExampleMigrations', $container->get(MigrationConfig::class)->getNamespace());
+    expect(iterator_to_array($container->get(SchemaInterface::class)->getRoles()))->toBe([]);
+    expect($container->get(MigrationConfig::class)->getNamespace())->toBe('ExampleMigrations');
 });
 
 it('creates default typecasts without application classes', function (): void {
@@ -44,8 +44,8 @@ it('creates default typecasts without application classes', function (): void {
     ]);
 
     $handler = $orm->getFactory()->typecast($schema, $database, 'record');
-    Assert::assertInstanceOf(CastableInterface::class, $handler);
-    Assert::assertInstanceOf(\Carbon\CarbonImmutable::class, $handler->cast(['created' => '2026-11-25 12:00:00'])['created']);
+    expect($handler)->toBeInstanceOf(CastableInterface::class);
+    expect($handler->cast(['created' => '2026-11-25 12:00:00'])['created'])->toBeInstanceOf(\Carbon\CarbonImmutable::class);
 });
 
 it('application can register additional typecast handlers', function (): void {
@@ -57,8 +57,8 @@ it('application can register additional typecast handlers', function (): void {
     ]);
 
     $handler = $orm->getFactory()->typecast($schema, $database, 'record');
-    Assert::assertInstanceOf(CastableInterface::class, $handler);
-    Assert::assertSame(['name' => 'EXAMPLE'], $handler->cast(['name' => 'example']));
+    expect($handler)->toBeInstanceOf(CastableInterface::class);
+    expect($handler->cast(['name' => 'example']))->toBe(['name' => 'EXAMPLE']);
 });
 
 it('uuid rules do not leak across roles', function (): void {
@@ -73,11 +73,8 @@ it('uuid rules do not leak across roles', function (): void {
     $first = $factory->typecast($schema, $database, 'first');
     $second = $factory->typecast($schema, $database, 'second');
 
-    Assert::assertSame(['id' => 7], $second->cast(['id' => '7']));
-    Assert::assertSame(
-        '018f0000-0000-7000-8000-000000000001',
-        $first->cast(['id' => '018f0000-0000-7000-8000-000000000001'])['id']->toString(),
-    );
+    expect($second->cast(['id' => '7']))->toBe(['id' => 7]);
+    expect($first->cast(['id' => '018f0000-0000-7000-8000-000000000001'])['id']->toString())->toBe('018f0000-0000-7000-8000-000000000001');
 });
 
 it('application factory can replace uuid handler and register additional role local handlers', function (): void {
@@ -103,14 +100,8 @@ it('application factory can replace uuid handler and register additional role lo
     $first = $factory->typecast($schema, $db, 'first');
     $second = $factory->typecast($schema, $db, 'second');
 
-    Assert::assertSame(
-        ['id' => 'custom:one', 'name' => 'first:alice', 'other' => 'untouched'],
-        $first->cast(['id' => 'one', 'name' => 'alice', 'other' => 'untouched']),
-    );
-    Assert::assertSame(
-        ['id' => 'untouched', 'other' => 'custom:two', 'label' => 'second:bob'],
-        $second->cast(['id' => 'untouched', 'other' => 'two', 'label' => 'bob']),
-    );
+    expect($first->cast(['id' => 'one', 'name' => 'alice', 'other' => 'untouched']))->toBe(['id' => 'custom:one', 'name' => 'first:alice', 'other' => 'untouched']);
+    expect($second->cast(['id' => 'untouched', 'other' => 'two', 'label' => 'bob']))->toBe(['id' => 'untouched', 'other' => 'custom:two', 'label' => 'second:bob']);
 });
 
 it('postgres uuid typecast round trips binary data with zero bytes', function (): void {
