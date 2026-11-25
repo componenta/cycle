@@ -415,6 +415,8 @@ final class DataFetcherPaginationTest extends TestCase
             }
         };
         $driver->setLogger($logger);
+        $expectedId = $db->getType() === 'SQLServer' ? '1' : 1;
+        $logger->queries = [];
 
         try {
             $source = $db->select('id', 'label AS category')->from(new Fragment(
@@ -423,14 +425,14 @@ final class DataFetcherPaginationTest extends TestCase
             $fetcher = new PaginationFetcher($db, $source);
 
             $page = $fetcher(new CountedPage(1));
-            self::assertSame([['id' => 1, 'category' => 'a']], $page->results);
+            self::assertSame([['id' => $expectedId, 'category' => 'a']], $page->results);
             self::assertSame(2, $page->totalCount);
             self::assertTrue($page->hasNextPage);
             self::assertCount(2, $logger->queries, 'Known projection width must not require metadata SQL.');
 
             $logger->queries = [];
             $page = $fetcher(new Page(1));
-            self::assertSame([['id' => 1, 'category' => 'a']], $page->results);
+            self::assertSame([['id' => $expectedId, 'category' => 'a']], $page->results);
             self::assertTrue($page->hasNextPage);
             self::assertCount(2, $logger->queries, 'An existence probe must not request metadata SQL.');
 
@@ -441,7 +443,7 @@ final class DataFetcherPaginationTest extends TestCase
                 ))->orderBy('id');
                 $page = (new PaginationFetcher($db, $source))(new CountedPage(1));
 
-                self::assertSame([['id' => 1, 'label' => 'a']], $page->results);
+                self::assertSame([['id' => $expectedId, 'label' => 'a']], $page->results);
                 self::assertSame(2, $page->totalCount);
                 self::assertCount(
                     in_array($db->getType(), ['MySQL', 'SQLServer'], true) ? 3 : 2,
