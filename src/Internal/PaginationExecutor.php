@@ -39,6 +39,7 @@ final class PaginationExecutor
         if (!$query instanceof PaginableInterface) {
             return $fetchResults($select, null, $query);
         }
+        self::assertValidPage($query);
         if ($query instanceof RequiresTotalCountInterface) {
             return $fetchResults($select, $countRows($select), $query);
         }
@@ -58,7 +59,11 @@ final class PaginationExecutor
 
     public function hint(iterable $rows, ?int $count, ?object $query, object $owner): ?bool
     {
-        if ($count !== null || !$query instanceof PaginableInterface) {
+        if (!$query instanceof PaginableInterface) {
+            return null;
+        }
+        self::assertValidPage($query);
+        if ($count !== null) {
             return null;
         }
 
@@ -75,6 +80,16 @@ final class PaginationExecutor
         return $query instanceof PaginableInterface
             ? new Paginator($results, $query->limit, $query->offset, $count, $hint)
             : $results;
+    }
+
+    private static function assertValidPage(PaginableInterface $query): void
+    {
+        if ($query->limit < 1) {
+            throw new \InvalidArgumentException('Pagination limit must be positive.');
+        }
+        if ($query->offset < 0) {
+            throw new \InvalidArgumentException('Pagination offset must be non-negative.');
+        }
     }
 
     private function hasNextPage(SelectQuery $select, PaginableInterface $query): bool

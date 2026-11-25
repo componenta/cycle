@@ -502,6 +502,28 @@ final class DataFetcherPaginationTest extends TestCase
         }
     }
 
+    #[DataProvider('invalidDirectPages')]
+    public function testDirectFetchRejectsInvalidPaginationBeforeReadingRows(?int $count, int $limit, int $offset): void
+    {
+        $fetcher = new DirectRowsPaginationFetcher($this->createStub(DatabaseInterface::class));
+        $rows = (static function (): \Generator {
+            throw new \LogicException('Invalid pagination must not consume rows.');
+            yield [];
+        })();
+
+        $this->expectException(\InvalidArgumentException::class);
+        $fetcher($rows, $count, new Page($limit, $offset));
+    }
+
+    public static function invalidDirectPages(): iterable
+    {
+        foreach ([null, 1] as $count) {
+            yield [$count, 0, 0];
+            yield [$count, -1, 0];
+            yield [$count, 1, -1];
+        }
+    }
+
     private function database(): DatabaseInterface
     {
         $settings = ['DB_DRIVER' => 'sqlite', 'DB_NAME' => ':memory:'];
@@ -571,5 +593,14 @@ final class ResultTransformingPaginationFetcher extends DataFetcher
             $page->totalCount,
             $page->hasNextPage,
         );
+    }
+}
+
+
+final class DirectRowsPaginationFetcher extends DataFetcher
+{
+    public function __invoke(iterable $rows, ?int $count, PaginableInterface $query): Paginator
+    {
+        return $this->fetchResults($rows, $count, $query);
     }
 }
