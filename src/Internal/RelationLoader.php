@@ -275,8 +275,8 @@ final readonly class RelationLoader
         $ids = array_values(array_unique($ids));
         $hasRepeatedKeys = count($ids) !== $count;
 
-        // A DBAL Parameter array infers each child's type independently.
-        // Preserve the binary type explicitly for a stream-backed key column.
+        // DBAL flattens IN lists; raw values default to PDO::PARAM_STR.
+        // Preserve each non-string value's type as well as explicit binary keys.
         if ($binary) {
             $ids = array_map(static function (mixed $id): Parameter {
                 if (!is_string($id)) {
@@ -284,6 +284,11 @@ final readonly class RelationLoader
                 }
                 return new Parameter($id, PDO::PARAM_LOB);
             }, $ids);
+        } else {
+            $ids = array_map(
+                static fn (mixed $id): string|Parameter => is_string($id) ? $id : new Parameter($id),
+                $ids,
+            );
         }
 
         return [$ids, $binary, $hasRepeatedKeys];
