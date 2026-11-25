@@ -100,4 +100,24 @@ final class LazyGhostEntityFactoryTest extends TestCase {
             $factory->extractData($withoutRelation, $entity),
         );
     }
+
+    public function testMissingToManyCollectionIsInitializedWhenNoReferenceIsPending(): void
+    {
+        $relation = $this->createStub(\Cycle\ORM\Relation\HasMany::class);
+        $relation->method('collect')->willReturn([]);
+        $map = $this->relationMap(true, $relation);
+        $factory = new LazyGhostEntityFactory();
+        $entity = $factory->create($map, CollectionEntity::class);
+
+        $factory->upgrade($map, $entity, ['id' => 1]);
+
+        self::assertSame([], $entity->related);
+        self::assertSame(['related' => []], $factory->extractRelations($map, $entity));
+    }
+}
+
+final class CollectionEntity
+{
+    public int $id;
+    public array $related;
 }

@@ -139,7 +139,7 @@ class LazyGhostEntityFactory
         }
 
         if ($isLazyUninitialized && $pending === [] && $reflection->isUninitializedLazyObject($entity)) {
-            $reflection->markLazyObjectAsInitialized($entity);
+            $reflection->initializeLazyObject($entity);
         }
 
         return $entity;
