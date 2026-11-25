@@ -98,6 +98,7 @@ class LazyGhostEntityFactory
 
         $pending = $this->pendingRefs[$entity] ?? [];
         $scalarData = [];
+        $eagerRelations = [];
 
         foreach ($data as $property => $value) {
             $relation = $relations[$property] ?? null;
@@ -108,10 +109,11 @@ class LazyGhostEntityFactory
                 if ($prop === null && $this->allowsDynamicProperties($reflection)
                     && $this->findDeclaredProperty($reflection, $property) === null
                 ) {
-                    // An absent dynamic property cannot be marked lazy. Resolve
-                    // it for the assignment phase, after pending refs are saved.
+                    // An absent dynamic property cannot be marked lazy.
+                    // Defer resolution until all scalar fields and pending
+                    // references have been published.
                     unset($pending[$property]);
-                    $scalarData[$property] = $relation->collect($relation->resolve($value, true));
+                    $eagerRelations[$property] = ['ref' => $value, 'relation' => $relation, 'prop' => null];
                     continue;
                 }
 
@@ -123,8 +125,7 @@ class LazyGhostEntityFactory
                 } else {
                     unset($pending[$property]);
                     if ($prop !== null && !($prop->isReadOnly() && $prop->isInitialized($entity))) {
-                        $resolved = $relation->collect($relation->resolve($value, true));
-                        $prop->setRawValueWithoutLazyInitialization($entity, $resolved);
+                        $eagerRelations[$property] = ['ref' => $value, 'relation' => $relation, 'prop' => $prop];
                     }
                 }
             } else {
@@ -166,7 +167,25 @@ class LazyGhostEntityFactory
             }
         }
 
-        if ($isLazyUninitialized && $pending === [] && $reflection->isUninitializedLazyObject($entity)) {
+        // Resolution can execute application code or recursively load a
+        // related entity. Do not expose an incomplete scalar or pending-ref
+        // state to that code, or republish a stale pending snapshot afterward.
+        foreach ($eagerRelations as $property => $info) {
+            $prop = $info['prop'];
+            if ($prop !== null && $prop->isReadOnly() && !$prop->isLazy($entity) && $prop->isInitialized($entity)) {
+                continue;
+            }
+
+            $relation = $info['relation'];
+            $resolved = $relation->collect($relation->resolve($info['ref'], true));
+            if ($prop === null) {
+                $entity->{$property} = $resolved;
+            } elseif (!($prop->isReadOnly() && !$prop->isLazy($entity) && $prop->isInitialized($entity))) {
+                $prop->setRawValueWithoutLazyInitialization($entity, $resolved);
+            }
+        }
+
+        if ($isLazyUninitialized && !isset($this->pendingRefs[$entity]) && $reflection->isUninitializedLazyObject($entity)) {
             $reflection->initializeLazyObject($entity);
         }
 

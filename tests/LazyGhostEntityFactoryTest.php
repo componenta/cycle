@@ -126,6 +126,44 @@ final class LazyGhostEntityFactoryTest extends TestCase {
         self::assertSame(['related' => $replacement, 'other' => $other], $factory->extractRelations($map, $entity));
     }
 
+    public function testEagerRelationResolutionSeesTheLatestScalarAndPendingRelationState(): void
+    {
+        $old = new \stdClass();
+        $replacement = new \stdClass();
+        $newOther = new \stdClass();
+        $oldReference = $this->createStub(\Cycle\ORM\Reference\ReferenceInterface::class);
+        $newReference = $this->createStub(\Cycle\ORM\Reference\ReferenceInterface::class);
+        $replacementReference = $this->createStub(\Cycle\ORM\Reference\ReferenceInterface::class);
+
+        $otherRelation = $this->createMock(ActiveRelationInterface::class);
+        $otherRelation->expects(self::once())->method('resolve')->with($newReference, true)->willReturn($newOther);
+        $otherRelation->method('collect')->willReturnArgument(0);
+
+        $entity = null;
+        $firstRelation = $this->createMock(ActiveRelationInterface::class);
+        $firstRelation->expects(self::once())->method('resolve')->with($replacementReference, true)
+            ->willReturnCallback(static function () use (&$entity, $newOther, $replacement): object {
+                self::assertSame(2, $entity->id);
+                // Resolving this relation reenters the entity's initializer.
+                // The initializer must see the new reference, never the old one.
+                self::assertSame($newOther, $entity->other);
+                return $replacement;
+            });
+        $firstRelation->method('collect')->willReturnArgument(0);
+
+        $map = $this->relationMap(true, $firstRelation, $otherRelation);
+        $factory = new LazyGhostEntityFactory();
+        $entity = $factory->create($map, TwoRelationsEntity::class);
+        $factory->upgrade($map, $entity, ['id' => 1, 'related' => $old, 'other' => $oldReference]);
+
+        // Deliberately put the eager relation first.
+        $factory->upgrade($map, $entity, ['related' => $replacementReference, 'other' => $newReference, 'id' => 2]);
+
+        self::assertSame($replacement, $entity->related);
+        self::assertSame($newOther, $entity->other);
+        self::assertSame(['related' => $replacement, 'other' => $newOther], $factory->extractRelations($map, $entity));
+    }
+
     public function testInitializedReadonlyRelationDoesNotResolveAnUnusedReference(): void
     {
         $relation = $this->createMock(ActiveRelationInterface::class);
