@@ -27,6 +27,8 @@ use WeakMap;
 
 abstract class DataFetcher
 {
+    private const int RELATION_BATCH_SIZE = 500;
+
     /**
      * Fields to exclude from results
      *
@@ -483,8 +485,8 @@ abstract class DataFetcher
     /**
      * Batch load belongsTo relation (N->1).
      *
-     * Collects unique foreign key values from raw rows, executes a single
-     * WHERE IN query, and attaches the related data to each result.
+     * Collects unique foreign key values from raw rows, executes bounded
+     * WHERE IN queries, and attaches the related data to each result.
      *
      * @param array<int, array>  $results    Transformed results (by reference)
      * @param array<int, array>  $rows       Raw database rows
@@ -544,16 +546,18 @@ abstract class DataFetcher
             $selectColumns[] = $tableKey;
         }
 
-        $relatedRows = $this->db
-            ->select($selectColumns)
-            ->from($table)
-            ->where($tableKey, 'IN', new Parameter($ids))
-            ->fetchAll();
-
         // Index by table key
         $indexed = [];
-        foreach ($relatedRows as $row) {
-            $indexed[$row[$tableKey]] = $row;
+        foreach (array_chunk($ids, self::RELATION_BATCH_SIZE) as $chunk) {
+            $relatedRows = $this->db
+                ->select($selectColumns)
+                ->from($table)
+                ->where($tableKey, 'IN', new Parameter($chunk))
+                ->fetchAll();
+
+            foreach ($relatedRows as $row) {
+                $indexed[$row[$tableKey]] = $row;
+            }
         }
 
         foreach ($results as $i => &$result) {
@@ -568,7 +572,7 @@ abstract class DataFetcher
     /**
      * Batch load hasMany relation (1->N).
      *
-     * Collects unique local key values, executes a single WHERE IN query
+     * Collects unique local key values, executes bounded WHERE IN queries
      * on the related table, groups results, and attaches arrays to each result.
      *
      * @param array<int, array>  $results    Transformed results (by reference)
@@ -601,7 +605,10 @@ abstract class DataFetcher
             return;
         }
 
-        $ids = array_values(array_unique(array_column($rows, $localKey)));
+        $ids = array_values(array_unique(array_filter(
+            array_column($rows, $localKey),
+            static fn (mixed $id): bool => $id !== null,
+        )));
 
         if ($ids === []) {
             foreach ($results as &$result) {
@@ -616,16 +623,18 @@ abstract class DataFetcher
             $selectColumns[] = $foreignKey;
         }
 
-        $relatedRows = $this->db
-            ->select($selectColumns)
-            ->from($table)
-            ->where($foreignKey, 'IN', new Parameter($ids))
-            ->fetchAll();
-
         // Group by foreign key
         $grouped = [];
-        foreach ($relatedRows as $row) {
-            $grouped[$row[$foreignKey]][] = $transform !== null ? $transform($row) : $row;
+        foreach (array_chunk($ids, self::RELATION_BATCH_SIZE) as $chunk) {
+            $relatedRows = $this->db
+                ->select($selectColumns)
+                ->from($table)
+                ->where($foreignKey, 'IN', new Parameter($chunk))
+                ->fetchAll();
+
+            foreach ($relatedRows as $row) {
+                $grouped[$row[$foreignKey]][] = $transform !== null ? $transform($row) : $row;
+            }
         }
 
         foreach ($results as $i => &$result) {
@@ -637,7 +646,7 @@ abstract class DataFetcher
     /**
      * Batch load belongsToMany relation (N->N via pivot table).
      *
-     * Executes a single JOIN query between the related table and pivot table,
+     * Executes bounded JOIN queries between the related table and pivot table,
      * groups results by the local key, and attaches arrays to each result.
      *
      * @param array<int, array>  $results         Transformed results (by reference)
@@ -676,7 +685,10 @@ abstract class DataFetcher
             return;
         }
 
-        $ids = array_values(array_unique(array_column($rows, $localKey)));
+        $ids = array_values(array_unique(array_filter(
+            array_column($rows, $localKey),
+            static fn (mixed $id): bool => $id !== null,
+        )));
 
         if ($ids === []) {
             foreach ($results as &$result) {
@@ -692,20 +704,22 @@ abstract class DataFetcher
         $pivotLocalKeyAlias = '_pivot_local_key';
         $selectColumns[] = "p.$pivotLocalKey AS $pivotLocalKeyAlias";
 
-        $relatedRows = $this->db
-            ->select($selectColumns)
-            ->from("$relatedTable AS r")
-            ->innerJoin($pivotTable, 'p')
-            ->on("p.$pivotForeignKey", "r.$relatedKey")
-            ->where("p.$pivotLocalKey", 'IN', new Parameter($ids))
-            ->fetchAll();
-
         // Group by local key
         $grouped = [];
-        foreach ($relatedRows as $row) {
-            $localId = $row[$pivotLocalKeyAlias];
-            unset($row[$pivotLocalKeyAlias]);
-            $grouped[$localId][] = $transform !== null ? $transform($row) : $row;
+        foreach (array_chunk($ids, self::RELATION_BATCH_SIZE) as $chunk) {
+            $relatedRows = $this->db
+                ->select($selectColumns)
+                ->from("$relatedTable AS r")
+                ->innerJoin($pivotTable, 'p')
+                ->on("p.$pivotForeignKey", "r.$relatedKey")
+                ->where("p.$pivotLocalKey", 'IN', new Parameter($chunk))
+                ->fetchAll();
+
+            foreach ($relatedRows as $row) {
+                $localId = $row[$pivotLocalKeyAlias];
+                unset($row[$pivotLocalKeyAlias]);
+                $grouped[$localId][] = $transform !== null ? $transform($row) : $row;
+            }
         }
 
         foreach ($results as $i => &$result) {
