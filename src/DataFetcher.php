@@ -7,25 +7,22 @@ namespace Componenta\Cycle;
 use Componenta\Caster\CasterProviderInterface;
 use Componenta\Cycle\Filter\OrderFilter;
 use Componenta\Cycle\Filter\PaginationFilter;
+use Componenta\Cycle\Internal\PaginationExecutor;
 use Componenta\Cycle\Internal\PaginationOrder;
+use Componenta\Cycle\Internal\ResultReader;
 use Componenta\Cycle\Internal\RelationLoader;
-use Componenta\Cycle\Internal\RowCountQuery;
 use Componenta\Cycle\Internal\RowMapper;
 use Componenta\Cycle\Internal\SqlIdentifier;
 use Componenta\Cycle\Query\PaginableInterface;
-use Componenta\Cycle\Query\RequiresTotalCountInterface;
 use Componenta\Cycle\Query\SelectableInterface;
 use Componenta\Cycle\Query\SortableInterface;
 use Componenta\Stdlib\Paginator;
 use Closure;
 use Cycle\Database\DatabaseInterface;
 use Cycle\Database\Query\SelectQuery;
-use Cycle\Database\StatementInterface;
-use Fiber;
 use Generator;
 use ReflectionMethod;
 use RuntimeException;
-use WeakMap;
 
 abstract class DataFetcher
 {
@@ -69,8 +66,8 @@ abstract class DataFetcher
      */
     private ?string $tableName = null;
 
-    /** @var WeakMap<object, array{query: PaginableInterface, hasNextPage: bool}>|null */
-    private ?WeakMap $paginationContexts = null;
+    private readonly PaginationExecutor $paginationExecutor;
+    private readonly bool $overridesFetchResults;
 
     public function __construct(
         protected readonly DatabaseInterface $db,
@@ -81,6 +78,9 @@ abstract class DataFetcher
             get_class_methods($this),
             $this->camelToSnake(...),
         );
+        $this->paginationExecutor = new PaginationExecutor();
+        $this->overridesFetchResults = new ReflectionMethod(static::class, 'fetchResults')
+            ->getDeclaringClass()->getName() !== self::class;
         $this->usesRelations = new ReflectionMethod(static::class, 'loadRelations')
             ->getDeclaringClass()->getName() !== self::class;
     }
@@ -269,46 +269,20 @@ abstract class DataFetcher
         if ($rows instanceof SelectQuery) {
             $rows = PaginationOrder::forPage($rows);
         }
-        $results = [];
-        $rawRows = [];
-        $hasNextPage = null;
-        if ($count === null && $query instanceof PaginableInterface) {
-            $context = $this->paginationContexts[Fiber::getCurrent() ?? $this] ?? null;
-            if ($context !== null && $context['query'] === $query) {
-                $hasNextPage = $context['hasNextPage'];
-            } elseif ($rows instanceof SelectQuery) {
-                $hasNextPage = $this->hasNextPage($rows, $query);
-            }
-        }
 
-        $statement = $rows instanceof SelectQuery ? $rows->run() : null;
-        if ($statement !== null) {
-            $rows = (static function (StatementInterface $statement): Generator {
-                while (($row = $statement->fetch()) !== false) {
-                    yield $row;
-                }
-            })($statement);
-        }
-        try {
-            foreach ($rows as $row) {
-                if ($this->usesRelations) {
-                    $rawRows[] = $row;
-                }
-                $results[] = $this->fetchRow($row, $query);
-            }
-        } finally {
-            $statement?->close();
-        }
+        $hint = $this->paginationExecutor->hint($rows, $count, $query, $this);
+        ['results' => $results, 'rawRows' => $rawRows] = ResultReader::read(
+            $rows,
+            $query,
+            $this->fetchRow(...),
+            $this->usesRelations,
+        );
 
         if ($this->usesRelations) {
             $this->loadRelations($results, $rawRows, $query);
         }
 
-        if ($query instanceof PaginableInterface) {
-            return new Paginator($results, $query->limit, $query->offset, $count, $hasNextPage);
-        }
-
-        return $results;
+        return $this->paginationExecutor->result($results, $query, $count, $hint);
     }
 
     /**
@@ -319,31 +293,13 @@ abstract class DataFetcher
      */
     protected function doFetch(?object $query = null): mixed
     {
-        $select = PaginationOrder::forPage($this->select($query));
-
-        if (!$query instanceof PaginableInterface) {
-            return $this->fetchResults($select, null, $query);
-        }
-
-        if ($query instanceof RequiresTotalCountInterface) {
-            return $this->fetchResults($select, $this->countRows($select), $query);
-        }
-
-        // Capture pagination before an override materializes or transforms the rows.
-        $hasNextPage = $this->hasNextPage($select, $query);
-        $contexts = $this->paginationContexts ??= new WeakMap();
-        $key = Fiber::getCurrent() ?? $this;
-        $previous = $contexts[$key] ?? null;
-        $contexts[$key] = ['query' => $query, 'hasNextPage' => $hasNextPage];
-        try {
-            return $this->fetchResults($select, null, $query);
-        } finally {
-            if ($previous === null) {
-                unset($contexts[$key]);
-            } else {
-                $contexts[$key] = $previous;
-            }
-        }
+        return $this->paginationExecutor->execute(
+            $this->select($query),
+            $query,
+            $this->fetchResults(...),
+            $this->countRows(...),
+            $this->overridesFetchResults ? $this : null,
+        );
     }
 
     /**
@@ -372,16 +328,7 @@ abstract class DataFetcher
      */
     protected function countRows(SelectQuery $select): int
     {
-        return (new RowCountQuery($select))->count();
-    }
-
-    private function hasNextPage(SelectQuery $select, PaginableInterface $query): bool
-    {
-        if ($query->limit > 0 && $query->offset > PHP_INT_MAX - $query->limit) {
-            return false;
-        }
-
-        return (new RowCountQuery($select))->hasRowsAfter($query->offset + $query->limit);
+        return $this->paginationExecutor->count($select);
     }
 
     /**

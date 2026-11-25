@@ -104,6 +104,30 @@ final class DataFetcherPaginationTest extends TestCase
         self::assertTrue($first->getReturn()->hasNextPage);
     }
 
+    public function testClonedFetcherDoesNotInheritAnActivePaginationHintInTheSameFiber(): void
+    {
+        $db = $this->database();
+        $source = $db->select('id')->from(new Fragment('(SELECT 1 AS id UNION ALL SELECT 2 AS id) AS items'))->orderBy('id');
+        $single = $db->select('id')->from(new Fragment('(SELECT 9 AS id) AS single_item'))->limit(1)->offset(0);
+        $fetcher = new ResultTransformingPaginationFetcher($db, $source, true);
+        $query = new Page(1);
+
+        $fetcher->beforeResults = static function (object $current) use ($fetcher, $single, $query): void {
+            self::assertSame($query, $current);
+            $cloned = clone $fetcher;
+            $page = $cloned->fetchDirect($single, $query);
+            self::assertSame([['id' => 9]], $page->results);
+            self::assertFalse($page->hasNextPage);
+        };
+
+        $fiber = new \Fiber(static fn (): Paginator => $fetcher($query));
+        $fiber->start();
+        $page = $fiber->getReturn();
+
+        self::assertSame([['label' => 'item 1']], $page->results);
+        self::assertTrue($page->hasNextPage);
+    }
+
     #[DataProvider('distinctPages')]
     public function testTotalCountCountsDistinctResultRows(bool $join, int $limit, int $offset, array $expected): void
     {
@@ -471,6 +495,11 @@ final class ResultTransformingPaginationFetcher extends DataFetcher
     public function __construct(DatabaseInterface $db, private SelectQuery $source, private bool $materialize = false) { parent::__construct($db); }
     public function __invoke(PaginableInterface $query): Paginator { return $this->doFetch($query); }
     protected function select(?object $query): SelectQuery { return $this->apply(clone $this->source, $query); }
+
+    public function fetchDirect(SelectQuery $select, PaginableInterface $query): Paginator
+    {
+        return parent::fetchResults($select, null, $query);
+    }
 
     protected function fetchResults(iterable $rows, ?int $count, ?object $query): iterable|Paginator
     {
