@@ -101,6 +101,53 @@ it('no related queries are executed without any usable keys', function (): void 
     expect($logger->queries)->toHaveCount(1);
 });
 
+it('preserves the storage type of integer keys in all batched relations', function (): void {
+    $composition = (new ConfigFactory())->create(
+        new Environment(['DB_DRIVER' => 'sqlite', 'DB_NAME' => ':memory:']),
+        new ConfigProvider(),
+    );
+    $db = (new ContainerFactory())->create($composition->config, $composition->dependencies)
+        ->get(DatabaseManager::class)->database();
+
+    // No declared affinity: SQLite must compare bound integer values as
+    // integers, not text. Zero and negative keys are both valid identifiers.
+    $db->execute('CREATE TABLE records (id, owner_id)');
+    $db->execute('CREATE TABLE owners (id)');
+    $db->execute('CREATE TABLE children (id, record_id)');
+    $db->execute('CREATE TABLE tags (id)');
+    $db->execute('CREATE TABLE record_tags (record_id, tag_id)');
+    $db->execute('INSERT INTO records VALUES (-1, 7), (0, 7), (1, NULL)');
+    $db->execute('INSERT INTO owners VALUES (7)');
+    $db->execute('INSERT INTO children VALUES (8, -1), (9, 0)');
+    $db->execute('INSERT INTO tags VALUES (10), (11)');
+    $db->execute('INSERT INTO record_tags VALUES (-1, 10), (0, 11)');
+
+    $logger = new RelationQueryLogger();
+    $db->getDriver(DatabaseInterface::READ)->setLogger($logger);
+
+    expect((new BatchRecordsFetcher($db))())->toBe([
+        [
+            'id' => -1, 'ownerId' => 7,
+            'owner' => ['id' => 7],
+            'children' => [['id' => 8, 'record_id' => -1]],
+            'tags' => [['id' => 10]],
+        ],
+        [
+            'id' => 0, 'ownerId' => 7,
+            'owner' => ['id' => 7],
+            'children' => [['id' => 9, 'record_id' => 0]],
+            'tags' => [['id' => 11]],
+        ],
+        [
+            'id' => 1, 'ownerId' => null,
+            'owner' => null,
+            'children' => [],
+            'tags' => [],
+        ],
+    ]);
+    expect($logger->queries)->toHaveCount(4);
+});
+
 final class BatchRecordsFetcher extends DataFetcher
 {
     public function __invoke(): array
