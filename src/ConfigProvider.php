@@ -53,7 +53,7 @@ class ConfigProvider extends \Componenta\Config\ConfigProvider
                 $container->has(UuidFactoryInterface::class)
                     ? $container->get(UuidFactoryInterface::class)
                     : new UuidFactory(),
-                binaryLob: ($context['database'] ?? null)?->getType() === 'Postgres',
+                binaryLob: in_array(($context['database'] ?? null)?->getType(), ['Postgres', 'SQLServer'], true),
             ),
 
             // Migrations

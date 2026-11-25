@@ -102,7 +102,7 @@ Application-specific typecast handlers are opt-in: set `ConfigKey::ROOT => [Conf
 
 When request data controls field names, override `selectableColumns()` and `sortableColumns()` to return maps from permitted public names to trusted database column names. An explicit selection map also controls the default projection; a null map retains the legacy trusted-query behavior. Built-in column filters accept only simple or table-qualified identifiers; trusted SQL expressions belong in explicit query builder calls or custom filters. Row-level authorization and tenant scoping remain the caller's responsibility. Do not pass untrusted column names directly into a fetcher without an allowlist.
 
-UUID typecasts use binary storage; the default ORM factory binds PostgreSQL `bytea` values as LOB parameters and restores binary strings, hexadecimal `bytea` text and PDO streams. Manually constructed `UuidTypecast` instances keep raw binary output unless `binaryLob: true` is supplied.
+UUID typecasts use binary storage; the default ORM factory binds PostgreSQL `bytea` and SQL Server binary values as LOB parameters and restores binary strings, hexadecimal `bytea` text and PDO streams. Manually constructed `UuidTypecast` instances keep raw binary output unless `binaryLob: true` is supplied.
 
 SQL Server certificates are verified by default. For local test servers with a self-signed certificate, `DB_TRUST_SERVER_CERTIFICATE=true` is an explicit opt-in; do not use it as a production default. The SQL Server pagination regression tests accept `CYCLE_TEST_DB_TRUST_SERVER_CERTIFICATE` as the corresponding test-only setting.
 
