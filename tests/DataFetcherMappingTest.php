@@ -60,6 +60,38 @@ final class DataFetcherMappingTest extends TestCase
         self::assertSame(['amount' => 5, 'firstName' => 'Alice'], $fetcher($row));
     }
 
+    public function testCachedDefaultNamesPreserveMutablePolicyAndVariedProjections(): void
+    {
+        $fetcher = new MutableDefaultMappingFetcher($this->createStub(DatabaseInterface::class));
+
+        self::assertSame(['firstName' => 'Alice'], $fetcher(['first_name' => 'Alice']));
+        $fetcher->rename('first_name', 'displayName');
+        self::assertSame(['displayName' => 'Alice'], $fetcher(['first_name' => 'Alice']));
+        $fetcher->resetMapping();
+        $fetcher->autoMap(false);
+        self::assertSame(['first_name' => 'Alice'], $fetcher(['first_name' => 'Alice']));
+        $fetcher->autoMap(true);
+
+        // More distinct names than the bounded cache can retain, including
+        // names longer than its admission limit.
+        $row = [];
+        $expected = [];
+        for ($i = 0; $i < 300; ++$i) {
+            $row['field_' . $i . '_value'] = $i;
+            $expected['field' . $i . 'Value'] = $i;
+        }
+        $longName = str_repeat('x', 200);
+        $row[$longName . '_value'] = 'long';
+        $expected[$longName . 'Value'] = 'long';
+        self::assertSame($expected, $fetcher($row));
+        self::assertSame($expected, $fetcher($row));
+
+        // Multiple names can map to one output key: preserve row order and
+        // the original last-write-wins semantics.
+        self::assertSame(['firstName' => 'second'], $fetcher(['first_name' => 'first', 'firstName' => 'second']));
+        self::assertSame(['firstName' => 'Alice'], $fetcher(['first_name' => 'Alice']));
+    }
+
     public function testOverriddenNamingHookIsNotBypassedByDefaultMapping(): void
     {
         $fetcher = new CustomSnakeMappingFetcher($this->createStub(DatabaseInterface::class));
@@ -152,5 +184,29 @@ final class CustomSnakeMappingFetcher extends PlainMappingFetcher
     protected function snakeToCamel(string $string): string
     {
         return 'custom_' . $string;
+    }
+}
+
+
+final class MutableDefaultMappingFetcher extends DataFetcher
+{
+    public function __invoke(array $row): array
+    {
+        return $this->fetchResults([$row], null, null)[0];
+    }
+
+    public function rename(string $from, string $to): void
+    {
+        $this->fieldMapping[$from] = $to;
+    }
+
+    public function resetMapping(): void
+    {
+        $this->fieldMapping = [];
+    }
+
+    public function autoMap(bool $enabled): void
+    {
+        $this->autoMapToCamelCase = $enabled;
     }
 }

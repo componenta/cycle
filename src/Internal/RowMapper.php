@@ -16,9 +16,15 @@ use TypeError;
  *
  * @internal
  */
-final readonly class RowMapper
+final class RowMapper
 {
-    public function __construct(private ?CasterProviderInterface $casterProvider) {}
+    private const int MAX_CACHED_NAMES = 128;
+    private const int MAX_CACHED_NAME_BYTES = 128;
+
+    /** @var array<string, string> Pure default conversions, bounded for persistent workers. */
+    private array $names = [];
+
+    public function __construct(private readonly ?CasterProviderInterface $casterProvider) {}
 
     /**
      * @param list<string> $methods Methods visible in the fetcher's scope.
@@ -47,13 +53,23 @@ final readonly class RowMapper
             if (!is_string($key)) {
                 throw new TypeError('Database field names must be strings.');
             }
-            $mappedKey = $fieldMapping[$key] ?? ($autoMap ? self::snakeToCamel($key) : $key);
+            $mappedKey = $fieldMapping[$key] ?? ($autoMap ? ($this->names[$key] ?? $this->rememberName($key)) : $key);
             if (!is_string($mappedKey)) {
                 throw new TypeError('Mapped database field names must be strings.');
             }
             $transformed[$mappedKey] = $value;
         }
         return $transformed;
+    }
+
+    private function rememberName(string $key): string
+    {
+        $name = self::snakeToCamel($key);
+        if (count($this->names) < self::MAX_CACHED_NAMES && strlen($key) <= self::MAX_CACHED_NAME_BYTES) {
+            $this->names[$key] = $name;
+        }
+
+        return $name;
     }
 
     public static function snakeToCamel(string $string): string
