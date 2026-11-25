@@ -31,6 +31,21 @@ final class UuidTypecastTest extends TestCase
         }
     }
 
+    public function testRejectsTrailingPayloadInUuidStream(): void
+    {
+        $typecast = new UuidTypecast(new UuidFactory());
+        $typecast->setRules(['id' => 'uuid']);
+        $stream = fopen('php://memory', 'r+');
+        fwrite($stream, "018f0000-0000-7000-8000-000000000001\ntrailing");
+        rewind($stream);
+        try {
+            $this->expectException(\InvalidArgumentException::class);
+            $typecast->cast(['id' => $stream]);
+        } finally {
+            fclose($stream);
+        }
+    }
+
     public function testRejectsNonStringAndNonStreamValues(): void
     {
         $typecast = new UuidTypecast(new UuidFactory());

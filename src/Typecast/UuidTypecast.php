@@ -46,6 +46,10 @@ final class UuidTypecast implements CastableInterface, UncastableInterface
                 // PDO PostgreSQL may return bytea as a stream.
                 if (is_resource($value) && get_resource_type($value) === 'stream') {
                     $value = stream_get_contents($value, 37);
+                    // Reject excess bytes instead of parsing a truncated stream.
+                    if ($value === false || strlen($value) > 36) {
+                        throw new \InvalidArgumentException('Invalid database UUID stream length.');
+                    }
                 }
                 if (!is_string($value)) {
                     throw new \InvalidArgumentException('A database UUID must be a string or readable stream.');
