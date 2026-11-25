@@ -7,6 +7,7 @@ use Cycle\Database\Driver\CompilerInterface;
 use Cycle\Database\Driver\DriverInterface;
 use Cycle\Database\Exception\BuilderException;
 use Cycle\Database\Injection\FragmentInterface;
+use Cycle\Database\Injection\Parameter;
 use Cycle\Database\Query\QueryParameters;
 use Cycle\Database\Query\SelectQuery;
 use UnexpectedValueException;
@@ -40,11 +41,15 @@ final readonly class RowCountQuery implements FragmentInterface
         // expressions can be pruned while aggregate and set-returning
         // projections still determine the number of rows.
         $postgresProbe = $directExistence && $driver->getType() === 'Postgres';
+        // On SQL Server the window must apply to the combined result, not
+        // an individual set-operation arm. The outer probe also avoids
+        // requiring ORDER BY expressions in DISTINCT projections.
+        $sqlServerProbe = $this->after !== null && !$directExistence && $driver->getType() === 'SQLServer';
         $parameters = new QueryParameters();
         $sql = $driver->getQueryCompiler()->compile(
             $parameters,
             $this->source->getPrefix() ?? '',
-            $postgresProbe ? new self($this->source) : $this,
+            $postgresProbe || $sqlServerProbe ? new self($this->source) : $this,
         );
         $bindings = $parameters->getParameters();
         if ($postgresProbe) {
@@ -66,9 +71,15 @@ final readonly class RowCountQuery implements FragmentInterface
             $columns = '(' . implode(', ', $names) . ')';
         }
 
+        if ($sqlServerProbe) {
+            $sql = "SELECT 1 FROM (\n" . $sql . "\n) AS _componenta_probe" . $columns
+                . "\nORDER BY (SELECT NULL) OFFSET ? ROWS FETCH NEXT 1 ROWS ONLY";
+            $bindings[] = new Parameter($this->after);
+        }
+
         $aggregate = $driver->getType() === 'SQLServer' ? 'COUNT_BIG(*)' : 'COUNT(*)';
         $statement = $driver->query(
-            $directExistence
+            $directExistence || $sqlServerProbe
                 ? "SELECT CASE WHEN EXISTS (\n" . $sql . "\n) THEN 1 ELSE 0 END"
                 : "SELECT " . $aggregate . " FROM (\n" . $sql . "\n) AS _componenta_count" . $columns,
             $bindings,
