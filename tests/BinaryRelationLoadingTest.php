@@ -38,6 +38,7 @@ final class BinaryRelationLoadingTest extends TestCase
         $other = hex2bin('018f00ff0080700080ff000000000002');
         $owner = hex2bin('018f00ff0080700080ff000000000003');
         $tag = hex2bin('018f00ff0080700080ff000000000004');
+        $repeated = hex2bin('018f00ff0080700080ff000000000005');
         $lob = static fn (string $value): Parameter => new Parameter($value, \PDO::PARAM_LOB);
 
         try {
@@ -48,6 +49,7 @@ final class BinaryRelationLoadingTest extends TestCase
             $db->execute('CREATE TABLE cycle_test_binary_pivot (root_id BYTEA, tag_id BYTEA)');
             $db->execute('INSERT INTO cycle_test_binary_roots VALUES (?, ?, 1), (?, ?, 2)',
                 [$lob($root), $lob($owner), $lob($other), null]);
+            $db->execute('INSERT INTO cycle_test_binary_roots VALUES (?, ?, 3)', [$lob($repeated), $lob($owner)]);
             $db->execute("INSERT INTO cycle_test_binary_owners VALUES (?, 'owner')", [$lob($owner)]);
             $db->execute("INSERT INTO cycle_test_binary_children VALUES (?, 'child')", [$lob($root)]);
             $db->execute("INSERT INTO cycle_test_binary_tags VALUES (?, 'tag')", [$lob($tag)]);
@@ -72,6 +74,8 @@ final class BinaryRelationLoadingTest extends TestCase
                     'owner' => 'owner', 'children' => ['child'], 'tags' => ['tag']],
                 ['id' => bin2hex($other), 'ownerId' => null, 'seq' => 2,
                     'owner' => null, 'children' => [], 'tags' => []],
+                ['id' => bin2hex($repeated), 'ownerId' => bin2hex($owner), 'seq' => 3,
+                    'owner' => 'owner', 'children' => [], 'tags' => []],
             ], $rows);
             self::assertSame(4, $logger->reads);
         } finally {
@@ -120,6 +124,9 @@ final class BinaryRelationsFetcher extends DataFetcher
                 if (is_resource($key)) {
                     TestCase::assertSame(0, ftell($key));
                     TestCase::assertSame(16, strlen(stream_get_contents($key)));
+                    // The same database owner is transformed for two root rows.
+                    // Closing a callback's stream must not invalidate the next row.
+                    fclose($key);
                 }
                 return $row['label'];
             });
