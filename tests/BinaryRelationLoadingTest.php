@@ -121,13 +121,12 @@ final class BinaryRelationsFetcher extends DataFetcher
         $this->batchBelongsTo($results, $rows, 'owner_id', 'cycle_test_binary_owners',
             columns: ['label'], transform: static function (array $row): string {
                 $key = $row['id'];
-                if (is_resource($key)) {
-                    TestCase::assertSame(0, ftell($key));
-                    TestCase::assertSame(16, strlen(stream_get_contents($key)));
-                    // The same database owner is transformed for two root rows.
-                    // Closing a callback's stream must not invalidate the next row.
-                    fclose($key);
-                }
+                TestCase::assertTrue(is_resource($key), 'Each invocation receives a live PostgreSQL bytea stream.');
+                TestCase::assertSame(0, ftell($key));
+                TestCase::assertSame(16, strlen(stream_get_contents($key)));
+                // The same database owner is transformed for two root rows.
+                // Closing a callback's stream must not invalidate the next row.
+                fclose($key);
                 return $row['label'];
             });
         $this->batchHasMany($results, $rows, 'children', 'cycle_test_binary_children', 'parent_id',
