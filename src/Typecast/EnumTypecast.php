@@ -12,11 +12,19 @@ final class EnumTypecast implements CastableInterface, UncastableInterface
     /** @var array<string, class-string<\BackedEnum>> */
     private array $rules = [];
 
+    /** @var array<string, true> */
+    private array $integerBacked = [];
+
     public function setRules(array $rules): array
     {
         foreach ($rules as $column => $rule) {
             if (is_string($rule) && enum_exists($rule) && is_subclass_of($rule, \BackedEnum::class)) {
                 $this->rules[$column] = $rule;
+                if ((new \ReflectionEnum($rule))->getBackingType()->getName() === 'int') {
+                    $this->integerBacked[$column] = true;
+                } else {
+                    unset($this->integerBacked[$column]);
+                }
                 unset($rules[$column]);
             }
         }
@@ -38,7 +46,7 @@ final class EnumTypecast implements CastableInterface, UncastableInterface
             }
 
             // PDO drivers may return integer-backed database values as strings.
-            if (is_string($value) && (new \ReflectionEnum($enumClass))->getBackingType()->getName() === 'int') {
+            if (is_string($value) && isset($this->integerBacked[$column])) {
                 $integer = filter_var($value, FILTER_VALIDATE_INT);
                 if ($integer === false) {
                     throw new \InvalidArgumentException('Invalid integer enum value.');

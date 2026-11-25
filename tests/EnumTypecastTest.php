@@ -19,6 +19,11 @@ enum OtherNumericStatus: int
     case Enabled = 1;
 }
 
+enum StringStatus: string
+{
+    case Enabled = '1';
+}
+
 final class EnumTypecastTest extends TestCase
 {
     private function typecast(): EnumTypecast
@@ -36,6 +41,15 @@ final class EnumTypecastTest extends TestCase
         self::assertSame(['status' => NumericStatus::Negative], $typecast->cast(['status' => '-1']));
         self::assertSame(['status' => -1], $typecast->uncast(['status' => NumericStatus::Negative]));
         self::assertSame(['status' => null], $typecast->cast(['status' => null]));
+    }
+
+    public function testStringBackedEnumPreservesItsExactValueAfterRuleReconfiguration(): void
+    {
+        $typecast = $this->typecast();
+        $typecast->setRules(['status' => StringStatus::class]);
+
+        self::assertSame(['status' => StringStatus::Enabled], $typecast->cast(['status' => '1']));
+        self::assertSame(['status' => '1'], $typecast->uncast(['status' => StringStatus::Enabled]));
     }
 
     public function testRejectsAnEnumOfAnotherTypeWhenCasting(): void
