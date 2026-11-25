@@ -50,6 +50,9 @@ class LazyGhostEntityFactory
      */
     protected array $extractableProperties = [];
 
+    /** @var \WeakMap<RelationMap, array<class-string, list<\ReflectionProperty>>>|null */
+    private ?\WeakMap $extractableByMap = null;
+
     public function __construct()
     {
         $this->pendingRefs = new \WeakMap();
@@ -292,6 +295,13 @@ class LazyGhostEntityFactory
      */
     protected function getExtractableProperties(string $class, RelationMap $relMap): array
     {
+        // RelationMap is immutable after construction. Only the default
+        // implementation can assume its protected class metadata is stable.
+        $cacheable = static::class === self::class;
+        if ($cacheable && isset($this->extractableByMap[$relMap][$class])) {
+            return $this->extractableByMap[$relMap][$class];
+        }
+
         if (!isset($this->extractableProperties[$class])) {
             $reflection = $this->getReflection($class);
             $properties = [];
@@ -315,10 +325,23 @@ class LazyGhostEntityFactory
 
         $relations = $relMap->getRelations();
 
-        return array_values(array_filter(
+        if ($cacheable && $relations === []) {
+            return $this->extractableProperties[$class];
+        }
+
+        $properties = array_values(array_filter(
             $this->extractableProperties[$class],
             static fn (\ReflectionProperty $property): bool => !isset($relations[$property->getName()]),
         ));
+
+        if ($cacheable) {
+            $cache = $this->extractableByMap ??= new \WeakMap();
+            $byClass = $cache[$relMap] ?? [];
+            $byClass[$class] = $properties;
+            $cache[$relMap] = $byClass;
+        }
+
+        return $properties;
     }
 
     protected function resolveProperty(\ReflectionClass $reflection, string $name): \ReflectionProperty|false

@@ -95,10 +95,35 @@ final class LazyGhostEntityFactoryTest extends TestCase {
         $entity->related = null;
         $factory = new LazyGhostEntityFactory();
         self::assertSame(['id' => 1], $factory->extractData($withRelation, $entity));
-        self::assertSame(
-            (new LazyGhostEntityFactory())->extractData($withoutRelation, $entity),
-            $factory->extractData($withoutRelation, $entity),
-        );
+        self::assertSame(['id' => 1, 'related' => null], $factory->extractData($withoutRelation, $entity));
+
+        $entity->id = 2;
+        $entity->related = new \stdClass();
+        self::assertSame(['id' => 2], $factory->extractData($withRelation, $entity));
+        self::assertSame(['id' => 2, 'related' => $entity->related], $factory->extractData($withoutRelation, $entity));
+
+        $other = new CollectionEntity();
+        $other->id = 3;
+        $other->related = [];
+        self::assertSame(['id' => 3], $factory->extractData($withRelation, $other));
+        self::assertSame(['id' => 3, 'related' => []], $factory->extractData($withoutRelation, $other));
+        self::assertSame(['id' => 2], $factory->extractData($withRelation, $entity));
+    }
+
+    public function testExtractionDoesNotKeepAnUnusedRelationMapAlive(): void
+    {
+        $factory = new LazyGhostEntityFactory();
+        $map = $this->relationMap(true);
+        $reference = \WeakReference::create($map);
+        $entity = new HydratedEntity();
+        $entity->id = 1;
+        $entity->related = null;
+
+        self::assertSame(['id' => 1], $factory->extractData($map, $entity));
+        unset($map);
+        gc_collect_cycles();
+
+        self::assertNull($reference->get());
     }
 
     public function testMissingToManyCollectionIsInitializedWhenNoReferenceIsPending(): void
