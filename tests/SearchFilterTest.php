@@ -60,6 +60,35 @@ final class SearchFilterTest extends TestCase
         self::assertSame([['id' => 1]], $rows);
     }
 
+    public function testSqlServerAndOtherDialectsQuoteUnicodeColumnNames(): void
+    {
+        $db = $this->database();
+        $quoted = $db->getDriver()->getQueryCompiler()->quoteIdentifier('имя_поля');
+        foreach (['имя_поля', 'items.имя_поля'] as $column) {
+            $query = $db->select('id')->from(new Fragment(
+                "(SELECT 1 AS id, 'Alpha' AS $quoted UNION ALL SELECT 2, 'Beta') AS items",
+            ));
+            $rows = (new SearchFilter([$column], 'ALPHA', LikeMode::Exact))->apply($query)->fetchAll();
+            self::assertSame([1], array_map('intval', array_column($rows, 'id')));
+        }
+    }
+
+    public function testUnicodeExpressionsPreserveConfiguredTablePrefixesAndAliases(): void
+    {
+        $db = $this->database(false)->withPrefix('tenant_');
+        $db->execute('CREATE TABLE tenant_records (id INTEGER, "имя_поля" TEXT)');
+        $db->execute("INSERT INTO tenant_records VALUES (1, 'Alpha'), (2, 'Beta')");
+        foreach ([
+            ['records', 'records.имя_поля'],
+            ['records', 'tenant_records.имя_поля'],
+            ['records AS r', 'r.имя_поля'],
+        ] as [$table, $column]) {
+            $query = $db->select('id')->from($table);
+            $rows = (new SearchFilter([$column], 'ALPHA', LikeMode::Exact))->apply($query)->fetchAll();
+            self::assertSame([['id' => 1]], $rows);
+        }
+    }
+
     private function database(bool $useEnvironment = true): DatabaseInterface
     {
         $settings = ['DB_DRIVER' => 'sqlite', 'DB_NAME' => ':memory:'];

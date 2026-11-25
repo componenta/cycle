@@ -59,6 +59,30 @@ final class CalendarFilterTest extends TestCase
         yield 'calendar range' => [new DateFilter(['from' => '2025-01-05', 'to' => '2025-02-05']), [2, 3]];
     }
 
+    public function testSqlServerAndOtherDialectsQuoteUnicodeCalendarColumns(): void
+    {
+        $db = $this->database();
+        $type = match ($db->getType()) {
+            'SQLServer' => 'DATETIME2',
+            'Postgres' => 'TIMESTAMP',
+            'MySQL' => 'DATETIME',
+            default => 'TEXT',
+        };
+        $quoted = $db->getDriver()->getQueryCompiler()->quoteIdentifier('дата_создания');
+        $date = new DateTimeImmutable('2025-02-05');
+        foreach ([
+            new DateTimeFilter('items.дата_создания', $date),
+            new DateTimeFilter('items.дата_создания', $date, 'm', 'MONTH'),
+            new DateFilter(['dates' => ['2025-02-05']], 'дата_создания'),
+        ] as $filter) {
+            $query = $db->select('id')->from(new Fragment(
+                "(SELECT 1 AS id, CAST('2025-02-05 12:00:00' AS $type) AS $quoted "
+                . "UNION ALL SELECT 2, CAST('2025-01-01 12:00:00' AS $type)) AS items",
+            ));
+            self::assertSame([1], array_map('intval', array_column($filter->apply($query)->fetchAll(), 'id')));
+        }
+    }
+
     #[DataProvider('invalidDates')]
     public function testRejectsInvalidCalendarDates(array $date): void
     {

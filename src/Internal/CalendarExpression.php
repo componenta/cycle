@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace Componenta\Cycle\Internal;
 
-use Cycle\Database\Injection\Expression;
+use Cycle\Database\Injection\FragmentInterface;
 use Cycle\Database\Query\SelectQuery;
 use DateTimeInterface;
 use InvalidArgumentException;
@@ -23,7 +23,7 @@ final class CalendarExpression
         }
     }
 
-    public static function forQuery(SelectQuery $query, string $column, string $function): Expression
+    public static function forQuery(SelectQuery $query, string $column, string $function): FragmentInterface
     {
         $function = strtoupper($function);
         self::assertFunction($function);
@@ -32,13 +32,15 @@ final class CalendarExpression
         if ($function === 'DATE') {
             // SQL Server has no DATE() function. DATEFROMPARTS also handles
             // nullable values and leaves the column identifier to the DBAL.
-            return new Expression($driver === 'SQLServer'
-                ? "DATEFROMPARTS(YEAR($column),MONTH($column),DAY($column))"
-                : "DATE($column)");
+            return SqlIdentifier::expression(
+                $query,
+                $column,
+                $driver === 'SQLServer' ? 'DATEFROMPARTS(YEAR(%1$s),MONTH(%1$s),DAY(%1$s))' : 'DATE(%s)',
+            );
         }
 
         if ($driver === 'Postgres') {
-            return new Expression("DATE_PART(?, $column)", strtolower($function));
+            return SqlIdentifier::expression($query, $column, 'DATE_PART(?, %s)', strtolower($function));
         }
 
         if ($driver === 'SQLite') {
@@ -50,10 +52,10 @@ final class CalendarExpression
 
             // STRFTIME returns TEXT; arithmetic produces a number so the
             // numeric comparison does not depend on text padding or affinity.
-            return new Expression("STRFTIME(?, $column) + 0", $format);
+            return SqlIdentifier::expression($query, $column, 'STRFTIME(?, %s) + 0', $format);
         }
 
-        return new Expression("$function($column)");
+        return SqlIdentifier::expression($query, $column, $function . '(%s)');
     }
 
     public static function value(DateTimeInterface $date, string $format, string $function): string|int

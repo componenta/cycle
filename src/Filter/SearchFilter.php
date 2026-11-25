@@ -6,7 +6,6 @@ namespace Componenta\Cycle\Filter;
 
 use Componenta\Cycle\FilterInterface;
 use Componenta\Cycle\Internal\SqlIdentifier;
-use Cycle\Database\Injection\Expression;
 use Cycle\Database\Injection\Fragment;
 use Cycle\Database\Query\SelectQuery;
 
@@ -55,7 +54,7 @@ final readonly class SearchFilter implements FilterInterface
 
         return $query->where(static function (SelectQuery $q) use ($columns, $pattern): void {
             foreach ($columns as $i => $column) {
-                $expr = new Expression("LOWER($column)");
+                $expr = SqlIdentifier::expression($q, $column, 'LOWER(%s)');
                 $value = new Fragment('LOWER(?)', $pattern);
 
                 if ($i === 0) {
