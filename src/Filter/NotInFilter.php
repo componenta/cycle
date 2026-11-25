@@ -6,7 +6,9 @@ namespace Componenta\Cycle\Filter;
 
 use Componenta\Cycle\FilterInterface;
 use Componenta\Cycle\Internal\SqlIdentifier;
+use Cycle\Database\Injection\FragmentInterface;
 use Cycle\Database\Injection\Parameter;
+use Cycle\Database\Injection\ParameterInterface;
 use Cycle\Database\Query\SelectQuery;
 
 /**
@@ -34,7 +36,13 @@ final readonly class NotInFilter implements FilterInterface
         return $query->where(
             $this->column,
             'not in',
-            new Parameter($this->values)
+            new Parameter(array_map(
+                static fn (mixed $value): ParameterInterface|FragmentInterface =>
+                    $value instanceof ParameterInterface || $value instanceof FragmentInterface
+                        ? $value
+                        : new Parameter($value),
+                $this->values,
+            ))
         );
     }
 }
