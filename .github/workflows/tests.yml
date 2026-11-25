@@ -41,6 +41,25 @@ jobs:
             echo "After: $scenario"
             php "benchmarks/$scenario.php"
           done
+      - name: Checkout the Cycle App consumer
+        if: matrix.php == '8.5'
+        uses: actions/checkout@v7
+        with:
+          repository: componenta/cycle-app
+          ref: 82fd91331c3005640891b4e541daa557097b621c
+          path: _integration/cycle-app
+          persist-credentials: false
+      - name: Test Cycle App against the audited source tree
+        if: matrix.php == '8.5'
+        working-directory: _integration/cycle-app
+        shell: bash
+        run: |
+          set -euo pipefail
+          composer config --json repositories.cycle-audit "{\"type\":\"path\",\"url\":\"$GITHUB_WORKSPACE\",\"options\":{\"symlink\":true,\"versions\":{\"componenta/cycle\":\"1.1.1\"}}}"
+          composer update --prefer-dist --no-interaction
+          composer show componenta/cycle
+          test "$(realpath vendor/componenta/cycle)" = "$GITHUB_WORKSPACE"
+          composer test
 
   lowest-dependencies:
     runs-on: ubuntu-latest
