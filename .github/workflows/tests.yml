@@ -16,6 +16,8 @@ jobs:
         php: ['8.4', '8.5']
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
       - uses: shivammathur/setup-php@v2
         with:
           php-version: ${{ matrix.php }}
@@ -26,6 +28,18 @@ jobs:
       - run: composer install --no-interaction --prefer-dist
       - run: find src tests -name '*.php' -print0 | xargs -0 -n1 php -l
       - run: composer test
+      - name: Compare DataFetcher against the pre-decomposition baseline
+        if: matrix.php == '8.5'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git show 3f73aaf3af7fb492c7ef866bc958176de57e0abf:src/DataFetcher.php > "$RUNNER_TEMP/DataFetcher-baseline.php"
+          CYCLE_BENCH_FETCHER_SOURCE="$RUNNER_TEMP/DataFetcher-baseline.php" php benchmarks/data-fetcher.php > "$RUNNER_TEMP/cycle-bench-before.json"
+          php benchmarks/data-fetcher.php > "$RUNNER_TEMP/cycle-bench-after.json"
+          echo 'Pre-decomposition baseline:'
+          cat "$RUNNER_TEMP/cycle-bench-before.json"
+          echo 'Current:'
+          cat "$RUNNER_TEMP/cycle-bench-after.json"
 
   mysql:
     runs-on: ubuntu-latest
