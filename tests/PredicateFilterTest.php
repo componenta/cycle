@@ -92,6 +92,17 @@ it('returns the correct rows for each public predicate filter', function (Filter
     yield 'boolean false' => [new BooleanFilter('active', false), [2]];
     yield 'in' => [new InFilter('amount', [10, 30]), [1, 3]];
     yield 'not in' => [new NotInFilter('amount', [10, 30]), [2]];
+    yield 'in with explicit parameter' => [new InFilter('amount', [new \Cycle\Database\Injection\Parameter(10, \PDO::PARAM_INT), 30]), [1, 3]];
+    yield 'in with null' => [new InFilter('amount', [10, null]), [1]];
+    yield 'not in with null' => [new NotInFilter('amount', [10, null]), []];
+    yield 'in with mixed bound expression' => [
+        new InFilter('amount', [10, new Fragment('CAST(? AS INTEGER) + CAST(? AS INTEGER)', 15, 15)]),
+        [1, 3],
+    ];
+    yield 'not in with mixed bound expression' => [
+        new NotInFilter('amount', [10, new Fragment('CAST(? AS INTEGER) + CAST(? AS INTEGER)', 15, 15)]),
+        [2],
+    ];
     yield 'null' => [new NullFilter('amount'), [4]];
     yield 'not null' => [new NotNullFilter('amount'), [1, 2, 3]];
     yield 'active records' => [new SoftDeleteFilter('deleted_at'), [1, 3, 4]];
