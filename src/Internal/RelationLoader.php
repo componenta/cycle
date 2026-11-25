@@ -180,28 +180,36 @@ final readonly class RelationLoader
             return;
         }
 
-        // Build select columns with table alias prefix
-        $selectColumns = $columns === ['*']
-            ? ['r.*']
-            : array_map(static fn(string $c) => "r.$c", $columns);
-        $pivotLocalKeyAlias = '_pivot_local_key';
-        $selectColumns[] = "p.$pivotLocalKey AS $pivotLocalKeyAlias";
+        // PDO groups by the first result column and excludes that column
+        // from the related row. No reserved alias can collide with r.* or
+        // with an explicitly selected field.
+        $selectColumns = [
+            "p.$pivotLocalKey",
+            ...($columns === ['*'] ? ['r.*'] : array_map(static fn(string $c) => "r.$c", $columns)),
+        ];
 
-        // Group by local key
         $grouped = [];
         foreach (array_chunk($ids, self::BATCH_SIZE) as $chunk) {
-            $relatedRows = $this->db
+            $groups = $this->db
                 ->select($selectColumns)
                 ->from("$relatedTable AS r")
                 ->innerJoin($pivotTable, 'p')
                 ->on("p.$pivotForeignKey", "r.$relatedKey")
                 ->where("p.$pivotLocalKey", 'IN', new Parameter($chunk))
-                ->fetchAll();
+                ->fetchAll(\PDO::FETCH_GROUP | \PDO::FETCH_ASSOC);
 
-            foreach ($relatedRows as $row) {
-                $localId = $row[$pivotLocalKeyAlias];
-                unset($row[$pivotLocalKeyAlias]);
-                $grouped[$localId][] = $transform !== null ? $transform($row) : $row;
+            foreach ($groups as $localId => $relatedRows) {
+                if ($transform !== null) {
+                    $relatedRows = array_map($transform, $relatedRows);
+                }
+
+                if (isset($grouped[$localId])) {
+                    foreach ($relatedRows as $row) {
+                        $grouped[$localId][] = $row;
+                    }
+                } else {
+                    $grouped[$localId] = $relatedRows;
+                }
             }
         }
 
