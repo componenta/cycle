@@ -60,6 +60,26 @@ final class ConfigIntegrationTest extends TestCase {
         self::assertInstanceOf(CastableInterface::class, $handler);
         self::assertSame(['name' => 'EXAMPLE'], $handler->cast(['name' => 'example']));
     }
+
+    public function testUuidRulesDoNotLeakAcrossRoles(): void
+    {
+        $container = $this->container();
+        $factory = $container->get(ORMInterface::class)->getFactory();
+        $database = $container->get(DatabaseManager::class)->database();
+        $schema = new \Cycle\ORM\Schema([
+            'first' => [SchemaInterface::ENTITY => \stdClass::class, SchemaInterface::TYPECAST => ['id' => 'uuid']],
+            'second' => [SchemaInterface::ENTITY => ExampleTypecast::class, SchemaInterface::TYPECAST => ['id' => 'int']],
+        ]);
+
+        $first = $factory->typecast($schema, $database, 'first');
+        $second = $factory->typecast($schema, $database, 'second');
+
+        self::assertSame(['id' => 7], $second->cast(['id' => '7']));
+        self::assertSame(
+            '018f0000-0000-7000-8000-000000000001',
+            $first->cast(['id' => '018f0000-0000-7000-8000-000000000001'])['id']->toString(),
+        );
+    }
 }
 
 final class ExampleTypecast implements CastableInterface

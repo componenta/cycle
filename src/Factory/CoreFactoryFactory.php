@@ -6,6 +6,8 @@ namespace Componenta\Cycle\Factory;
 
 use Componenta\Cycle\ConfigKey;
 use Componenta\Config\ContainerValue;
+use Componenta\DI\FactoryInterface;
+use Cycle\ORM\Parser\TypecastInterface;
 use Spiral\Core\Container;
 
 final class CoreFactoryFactory
@@ -19,7 +21,12 @@ final class CoreFactoryFactory
 
         if ($bindings !== []) {
             foreach ($bindings as $binding) {
-                $coreFactory->bindSingleton($binding, static fn() => $container->get($binding));
+                if (is_a($binding, TypecastInterface::class, true)) {
+                    // Each ORM role receives a new rule-bearing handler.
+                    $coreFactory->bind($binding, static fn() => $container->get(FactoryInterface::class)->make($binding));
+                } else {
+                    $coreFactory->bindSingleton($binding, static fn() => $container->get($binding));
+                }
             }
         }
 

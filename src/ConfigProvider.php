@@ -16,6 +16,9 @@ use Componenta\Cycle\Factory\MigratorFactory;
 use Componenta\Cycle\Factory\ORMFactory;
 use Componenta\Cycle\Factory\SchemaFactory;
 use Componenta\Cycle\Typecast\UuidTypecast;
+use Componenta\Identity\UuidFactory;
+use Componenta\Identity\UuidFactoryInterface;
+use Psr\Container\ContainerInterface;
 use Cycle\Database\Config\DatabaseConfig;
 use Cycle\Database\DatabaseInterface;
 use Cycle\Database\DatabaseManager;
@@ -46,6 +49,11 @@ class ConfigProvider extends \Componenta\Config\ConfigProvider
             EntityManager::class => EntityManagerFactory::class,
             CoreFactory::class => CoreFactoryFactory::class,
             SchemaInterface::class => SchemaFactory::class,
+            UuidTypecast::class => static fn (ContainerInterface $container): UuidTypecast => new UuidTypecast(
+                $container->has(UuidFactoryInterface::class)
+                    ? $container->get(UuidFactoryInterface::class)
+                    : new UuidFactory(),
+            ),
 
             // Migrations
             MigrationConfig::class => MigrationConfigFactory::class,
