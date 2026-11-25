@@ -10,6 +10,7 @@ use Componenta\Cycle\Filter\PaginationFilter;
 use Componenta\Cycle\Internal\PaginationOrder;
 use Componenta\Cycle\Internal\RelationLoader;
 use Componenta\Cycle\Internal\RowCountQuery;
+use Componenta\Cycle\Internal\RowMapper;
 use Componenta\Cycle\Internal\SqlIdentifier;
 use Componenta\Cycle\Query\PaginableInterface;
 use Componenta\Cycle\Query\RequiresTotalCountInterface;
@@ -56,12 +57,7 @@ abstract class DataFetcher
      */
     protected array $casters = [];
 
-    /**
-     * Resolved mapper methods
-     *
-     * @var array<string, string> [field_name => methodName]
-     */
-    private array $resolvedMappers = [];
+    private readonly RowMapper $rowMapper;
 
     /**
      * Whether the child class overrides loadRelations()
@@ -80,7 +76,11 @@ abstract class DataFetcher
         protected readonly DatabaseInterface $db,
         protected readonly ?CasterProviderInterface $casterProvider = null,
     ) {
-        $this->resolveMapperMethods();
+        $this->rowMapper = new RowMapper(
+            $casterProvider,
+            get_class_methods($this),
+            $this->camelToSnake(...),
+        );
         $this->usesRelations = new ReflectionMethod(static::class, 'loadRelations')
             ->getDeclaringClass()->getName() !== self::class;
     }
@@ -105,23 +105,6 @@ abstract class DataFetcher
 
         // Pluralize
         return $this->pluralize($snakeCase);
-    }
-
-    /**
-     * Resolve all mapper methods once
-     *
-     * Scans class for map* methods and builds field name -> method name mapping
-     */
-    private function resolveMapperMethods(): void
-    {
-        $methods = get_class_methods($this);
-
-        foreach ($methods as $methodName) {
-            if (str_starts_with($methodName, 'map') && $methodName !== 'mapField') {
-                $fieldName = lcfirst(substr($methodName, 3));
-                $this->resolvedMappers[$this->camelToSnake($fieldName)] = $methodName;
-            }
-        }
     }
 
     /**
@@ -157,14 +140,12 @@ abstract class DataFetcher
      */
     protected function transformData(array $data, ?object $query): array
     {
-        $transformed = [];
-
-        foreach ($data as $key => $value) {
-            $mappedKey = $this->getMappedFieldName($key);
-            $transformed[$mappedKey] = $this->mapField($key, $value, $data, $query);
-        }
-
-        return $transformed;
+        return $this->rowMapper->transform(
+            $data,
+            $query,
+            $this->getMappedFieldName(...),
+            $this->mapField(...),
+        );
     }
 
     /**
@@ -205,39 +186,13 @@ abstract class DataFetcher
      */
     protected function mapField(string $originalKey, mixed $value, array $data, ?object $query): mixed
     {
-        // Apply caster first
         if (isset($this->casters[$originalKey])) {
-            if ($this->casterProvider === null) {
-                throw new RuntimeException(
-                    sprintf(
-                        'Caster "%s" is registered for field "%s", but CasterProvider is not provided',
-                        $this->casters[$originalKey],
-                        $originalKey
-                    )
-                );
-            }
-
-            $caster = $this->casterProvider->provide($this->casters[$originalKey]);
-
-            if ($caster === null) {
-                throw new RuntimeException(
-                    sprintf(
-                        'Caster "%s" for field "%s" cannot be resolved from CasterProvider',
-                        $this->casters[$originalKey],
-                        $originalKey
-                    )
-                );
-            }
-
-            $value = $caster->cast($value);
+            $value = $this->rowMapper->cast($originalKey, $this->casters[$originalKey], $value);
         }
 
-        // Then apply mapper method
-        if (isset($this->resolvedMappers[$originalKey])) {
-            return $this->{$this->resolvedMappers[$originalKey]}($value, $data, $query);
-        }
+        $mapper = $this->rowMapper->mapperFor($originalKey);
 
-        return $value;
+        return $mapper === null ? $value : $this->{$mapper}($value, $data, $query);
     }
 
     /**
