@@ -12,102 +12,95 @@ use Componenta\DI\ContainerFactory;
 use Cycle\Database\DatabaseInterface;
 use Cycle\Database\DatabaseManager;
 use Cycle\Database\Query\SelectQuery;
-use PHPUnit\Framework\TestCase;
+use PHPUnit\Framework\Assert;
 
-final class BatchRelationsTest extends TestCase
-{
-    public function testBelongsToPreservesCustomNamingAndRowSpecificTransformation(): void
-    {
-        $composition = (new ConfigFactory())->create(
-            new Environment(['DB_DRIVER' => 'sqlite', 'DB_NAME' => ':memory:']),
-            new ConfigProvider(),
-        );
-        $db = (new ContainerFactory())->create($composition->config, $composition->dependencies)
-            ->get(DatabaseManager::class)->database();
-        $db->execute('CREATE TABLE records (id INTEGER, owner_id INTEGER)');
-        $db->execute('CREATE TABLE owners (id INTEGER, name TEXT)');
-        $db->execute("INSERT INTO records VALUES (1, 7), (2, 7), (3, NULL)");
-        $db->execute("INSERT INTO owners VALUES (7, 'Alice')");
+it('belongs to preserves custom naming and row specific transformation', function (): void {
+    $composition = (new ConfigFactory())->create(
+        new Environment(['DB_DRIVER' => 'sqlite', 'DB_NAME' => ':memory:']),
+        new ConfigProvider(),
+    );
+    $db = (new ContainerFactory())->create($composition->config, $composition->dependencies)
+        ->get(DatabaseManager::class)->database();
+    $db->execute('CREATE TABLE records (id INTEGER, owner_id INTEGER)');
+    $db->execute('CREATE TABLE owners (id INTEGER, name TEXT)');
+    $db->execute("INSERT INTO records VALUES (1, 7), (2, 7), (3, NULL)");
+    $db->execute("INSERT INTO owners VALUES (7, 'Alice')");
 
-        $logger = new RelationQueryLogger();
-        $db->getDriver(DatabaseInterface::READ)->setLogger($logger);
-        $fetcher = new CustomRelationNamingFetcher($db);
-        self::assertSame([
-            ['id' => 1, 'owner_id' => 7, 'custom_owner' => 'Alice'],
-            ['id' => 2, 'owner_id' => 7, 'custom_owner' => 'Alice'],
-            ['id' => 3, 'owner_id' => null, 'custom_owner' => null],
-        ], $fetcher());
-        self::assertSame(2, $fetcher->transformed);
-        self::assertCount(2, $logger->queries, 'Repeated foreign keys must be queried only once.');
+    $logger = new RelationQueryLogger();
+    $db->getDriver(DatabaseInterface::READ)->setLogger($logger);
+    $fetcher = new CustomRelationNamingFetcher($db);
+    Assert::assertSame([
+        ['id' => 1, 'owner_id' => 7, 'custom_owner' => 'Alice'],
+        ['id' => 2, 'owner_id' => 7, 'custom_owner' => 'Alice'],
+        ['id' => 3, 'owner_id' => null, 'custom_owner' => null],
+    ], $fetcher());
+    Assert::assertSame(2, $fetcher->transformed);
+    Assert::assertCount(2, $logger->queries, 'Repeated foreign keys must be queried only once.');
+});
+
+it('loads all relation types across large batches', function (): void {
+    $composition = (new ConfigFactory())->create(
+        new Environment(['DB_DRIVER' => 'sqlite', 'DB_NAME' => ':memory:']),
+        new ConfigProvider(),
+    );
+    $db = (new ContainerFactory())->create($composition->config, $composition->dependencies)
+        ->get(DatabaseManager::class)->database();
+
+    $db->execute('CREATE TABLE records (id INTEGER, owner_id INTEGER)');
+    $db->execute('CREATE TABLE owners (id INTEGER)');
+    $db->execute('CREATE TABLE children (id INTEGER, record_id INTEGER)');
+    $db->execute('CREATE TABLE tags (id INTEGER)');
+    $db->execute('CREATE TABLE record_tags (record_id INTEGER, tag_id INTEGER)');
+
+    $sequence = 'WITH RECURSIVE seq(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM seq WHERE i < 1101) ';
+    $db->execute($sequence . 'INSERT INTO records SELECT i, i FROM seq');
+    $db->execute($sequence . 'INSERT INTO owners SELECT i FROM seq');
+    $db->execute($sequence . 'INSERT INTO children SELECT i, i FROM seq');
+    $db->execute($sequence . 'INSERT INTO tags SELECT i FROM seq');
+    $db->execute($sequence . 'INSERT INTO record_tags SELECT i, i FROM seq');
+    $db->execute('INSERT INTO records VALUES (1102, NULL)');
+
+    $logger = new RelationQueryLogger();
+    $db->getDriver(DatabaseInterface::READ)->setLogger($logger);
+    $rows = (new BatchRecordsFetcher($db))();
+
+    Assert::assertCount(1102, $rows);
+    Assert::assertCount(10, $logger->queries, 'One root query and three bounded queries per relation type.');
+    foreach (array_slice($rows, 0, 1101) as $index => $row) {
+        $id = $index + 1;
+        Assert::assertSame([
+            'id' => $id,
+            'ownerId' => $id,
+            'owner' => ['id' => $id],
+            'children' => [['id' => $id, 'record_id' => $id]],
+            'tags' => [['id' => $id]],
+        ], $row);
     }
+    Assert::assertSame([
+        'id' => 1102, 'ownerId' => null, 'owner' => null, 'children' => [], 'tags' => [],
+    ], $rows[1101]);
+});
 
-    public function testLoadsAllRelationTypesAcrossLargeBatches(): void
-    {
-        $composition = (new ConfigFactory())->create(
-            new Environment(['DB_DRIVER' => 'sqlite', 'DB_NAME' => ':memory:']),
-            new ConfigProvider(),
-        );
-        $db = (new ContainerFactory())->create($composition->config, $composition->dependencies)
-            ->get(DatabaseManager::class)->database();
+it('no related queries are executed without any usable keys', function (): void {
+    $composition = (new ConfigFactory())->create(
+        new Environment(['DB_DRIVER' => 'sqlite', 'DB_NAME' => ':memory:']),
+        new ConfigProvider(),
+    );
+    $db = (new ContainerFactory())->create($composition->config, $composition->dependencies)
+        ->get(DatabaseManager::class)->database();
+    $db->execute('CREATE TABLE records (id INTEGER, owner_id INTEGER)');
+    $db->execute('INSERT INTO records VALUES (NULL, NULL)');
 
-        $db->execute('CREATE TABLE records (id INTEGER, owner_id INTEGER)');
-        $db->execute('CREATE TABLE owners (id INTEGER)');
-        $db->execute('CREATE TABLE children (id INTEGER, record_id INTEGER)');
-        $db->execute('CREATE TABLE tags (id INTEGER)');
-        $db->execute('CREATE TABLE record_tags (record_id INTEGER, tag_id INTEGER)');
+    // Deliberately do not create the related tables: an unnecessary query
+    // would fail as well as exceed the query budget.
+    $logger = new RelationQueryLogger();
+    $db->getDriver(DatabaseInterface::READ)->setLogger($logger);
 
-        $sequence = 'WITH RECURSIVE seq(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM seq WHERE i < 1101) ';
-        $db->execute($sequence . 'INSERT INTO records SELECT i, i FROM seq');
-        $db->execute($sequence . 'INSERT INTO owners SELECT i FROM seq');
-        $db->execute($sequence . 'INSERT INTO children SELECT i, i FROM seq');
-        $db->execute($sequence . 'INSERT INTO tags SELECT i FROM seq');
-        $db->execute($sequence . 'INSERT INTO record_tags SELECT i, i FROM seq');
-        $db->execute('INSERT INTO records VALUES (1102, NULL)');
-
-        $logger = new RelationQueryLogger();
-        $db->getDriver(DatabaseInterface::READ)->setLogger($logger);
-        $rows = (new BatchRecordsFetcher($db))();
-
-        self::assertCount(1102, $rows);
-        self::assertCount(10, $logger->queries, 'One root query and three bounded queries per relation type.');
-        foreach (array_slice($rows, 0, 1101) as $index => $row) {
-            $id = $index + 1;
-            self::assertSame([
-                'id' => $id,
-                'ownerId' => $id,
-                'owner' => ['id' => $id],
-                'children' => [['id' => $id, 'record_id' => $id]],
-                'tags' => [['id' => $id]],
-            ], $row);
-        }
-        self::assertSame([
-            'id' => 1102, 'ownerId' => null, 'owner' => null, 'children' => [], 'tags' => [],
-        ], $rows[1101]);
-    }
-
-    public function testNoRelatedQueriesAreExecutedWithoutAnyUsableKeys(): void
-    {
-        $composition = (new ConfigFactory())->create(
-            new Environment(['DB_DRIVER' => 'sqlite', 'DB_NAME' => ':memory:']),
-            new ConfigProvider(),
-        );
-        $db = (new ContainerFactory())->create($composition->config, $composition->dependencies)
-            ->get(DatabaseManager::class)->database();
-        $db->execute('CREATE TABLE records (id INTEGER, owner_id INTEGER)');
-        $db->execute('INSERT INTO records VALUES (NULL, NULL)');
-
-        // Deliberately do not create the related tables: an unnecessary query
-        // would fail as well as exceed the query budget.
-        $logger = new RelationQueryLogger();
-        $db->getDriver(DatabaseInterface::READ)->setLogger($logger);
-
-        self::assertSame([
-            ['id' => null, 'ownerId' => null, 'owner' => null, 'children' => [], 'tags' => []],
-        ], (new BatchRecordsFetcher($db))());
-        self::assertCount(1, $logger->queries);
-    }
-
-}
+    Assert::assertSame([
+        ['id' => null, 'ownerId' => null, 'owner' => null, 'children' => [], 'tags' => []],
+    ], (new BatchRecordsFetcher($db))());
+    Assert::assertCount(1, $logger->queries);
+});
 
 final class BatchRecordsFetcher extends DataFetcher
 {

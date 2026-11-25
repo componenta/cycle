@@ -12,30 +12,26 @@ use Componenta\DI\ContainerFactory;
 use Cycle\Database\DatabaseManager;
 use Cycle\Database\Injection\Fragment;
 use Cycle\Database\Query\SelectQuery;
-use PHPUnit\Framework\TestCase;
+use PHPUnit\Framework\Assert;
 
-final class DataFetcherRelationsTest extends TestCase
-{
-    public function testRepeatedFetchesReadTheCurrentRelationSelection(): void
-    {
-        $composition = (new ConfigFactory())->create(
-            new Environment(['DB_DRIVER' => 'sqlite', 'DB_NAME' => ':memory:']),
-            new ConfigProvider(),
-        );
-        $container = (new ContainerFactory())->create($composition->config, $composition->dependencies);
-        $fetcher = new RelatedRowsFetcher($container->get(DatabaseManager::class)->database());
-        $query = (object) ['with' => 'tags'];
+it('repeated fetches read the current relation selection', function (): void {
+    $composition = (new ConfigFactory())->create(
+        new Environment(['DB_DRIVER' => 'sqlite', 'DB_NAME' => ':memory:']),
+        new ConfigProvider(),
+    );
+    $container = (new ContainerFactory())->create($composition->config, $composition->dependencies);
+    $fetcher = new RelatedRowsFetcher($container->get(DatabaseManager::class)->database());
+    $query = (object) ['with' => 'tags'];
 
-        self::assertSame([['id' => 1, 'relations' => ['tags']]], $fetcher($query));
-        $query->with = ['category'];
-        self::assertSame([['id' => 1, 'relations' => ['category']]], $fetcher($query));
-        $query->with = null;
-        self::assertSame([['id' => 1, 'relations' => []]], $fetcher($query));
-        self::assertSame([['id' => 1, 'relations' => []]], $fetcher(new class { public ?string $with; }));
-        self::assertSame([['id' => 1, 'relations' => []]], $fetcher(new class { private string $with = 'tags'; }));
-        self::assertSame([['id' => 1, 'relations' => []]], $fetcher(new \stdClass()));
-    }
-}
+    Assert::assertSame([['id' => 1, 'relations' => ['tags']]], $fetcher($query));
+    $query->with = ['category'];
+    Assert::assertSame([['id' => 1, 'relations' => ['category']]], $fetcher($query));
+    $query->with = null;
+    Assert::assertSame([['id' => 1, 'relations' => []]], $fetcher($query));
+    Assert::assertSame([['id' => 1, 'relations' => []]], $fetcher(new class { public ?string $with; }));
+    Assert::assertSame([['id' => 1, 'relations' => []]], $fetcher(new class { private string $with = 'tags'; }));
+    Assert::assertSame([['id' => 1, 'relations' => []]], $fetcher(new \stdClass()));
+});
 
 final class RelatedRowsFetcher extends DataFetcher
 {

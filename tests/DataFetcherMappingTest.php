@@ -8,116 +8,106 @@ use Componenta\Caster\CasterInterface;
 use Componenta\Caster\CasterProviderInterface;
 use Componenta\Cycle\DataFetcher;
 use Cycle\Database\DatabaseInterface;
-use PHPUnit\Framework\TestCase;
+use PHPUnit\Framework\Assert;
 
-final class DataFetcherMappingTest extends TestCase
-{
-    public function testMappingPreservesCustomHooksAndCasterOrder(): void
-    {
-        $caster = $this->createStub(CasterInterface::class);
-        $caster->method('cast')->willReturnCallback(static fn(mixed $value): int => (int) $value);
-        $provider = $this->createStub(CasterProviderInterface::class);
-        $provider->method('provide')->willReturnMap([['integer', $caster]]);
+it('mapping preserves custom hooks and caster order', function (): void {
+    $caster = $this->createStub(CasterInterface::class);
+    $caster->method('cast')->willReturnCallback(static fn(mixed $value): int => (int) $value);
+    $provider = $this->createStub(CasterProviderInterface::class);
+    $provider->method('provide')->willReturnMap([['integer', $caster]]);
 
-        $fetcher = new MappingContractFetcher($this->createStub(DatabaseInterface::class), $provider);
-        $query = (object) ['increment' => 2];
-        $row = ['total_value' => '5', 'hidden_value' => 'hidden', 'first_name' => 'Alice'];
+    $fetcher = new MappingContractFetcher($this->createStub(DatabaseInterface::class), $provider);
+    $query = (object) ['increment' => 2];
+    $row = ['total_value' => '5', 'hidden_value' => 'hidden', 'first_name' => 'Alice'];
 
-        self::assertSame([
-            'amount' => 7,
-            'customName' => 'ALICE',
-            'rawTotal' => '5',
-        ], $fetcher($row, $query));
+    Assert::assertSame([
+        'amount' => 7,
+        'customName' => 'ALICE',
+        'rawTotal' => '5',
+    ], $fetcher($row, $query));
+});
+
+it('mapping uses current configuration and clone state', function (): void {
+    $caster = $this->createStub(CasterInterface::class);
+    $caster->method('cast')->willReturnCallback(static fn(mixed $value): int => (int) $value);
+    $provider = $this->createStub(CasterProviderInterface::class);
+    $provider->method('provide')->willReturnMap([['integer', $caster]]);
+    $fetcher = new MappingContractFetcher($this->createStub(DatabaseInterface::class), $provider);
+    $clone = clone $fetcher;
+    $clone->renameAmount('newAmount');
+
+    $row = ['total_value' => '5'];
+    $query = (object) ['increment' => 1];
+    Assert::assertSame(['amount' => 6, 'rawTotal' => '5'], $fetcher($row, $query));
+    Assert::assertSame(['newAmount' => 6, 'rawTotal' => '5'], $clone($row, $query));
+});
+
+it('default mapping uses current field and caster configuration', function (): void {
+    $caster = $this->createStub(CasterInterface::class);
+    $caster->method('cast')->willReturnCallback(static fn(mixed $value): int => (int) $value);
+    $provider = $this->createStub(CasterProviderInterface::class);
+    $provider->method('provide')->willReturnMap([['integer', $caster]]);
+    $fetcher = new PlainMappingFetcher($this->createStub(DatabaseInterface::class), $provider);
+    $row = ['total_value' => '5', 'first_name' => 'Alice', 'hidden_value' => 'hidden'];
+
+    Assert::assertSame(['amount' => '5', 'firstName' => 'Alice'], $fetcher($row));
+    $fetcher->enableAmountCaster();
+    Assert::assertSame(['amount' => 5, 'firstName' => 'Alice'], $fetcher($row));
+});
+
+it('cached default names preserve mutable policy and varied projections', function (): void {
+    $fetcher = new MutableDefaultMappingFetcher($this->createStub(DatabaseInterface::class));
+
+    Assert::assertSame(['firstName' => 'Alice'], $fetcher(['first_name' => 'Alice']));
+    $fetcher->rename('first_name', 'displayName');
+    Assert::assertSame(['displayName' => 'Alice'], $fetcher(['first_name' => 'Alice']));
+    $fetcher->resetMapping();
+    $fetcher->autoMap(false);
+    Assert::assertSame(['first_name' => 'Alice'], $fetcher(['first_name' => 'Alice']));
+    $fetcher->autoMap(true);
+
+    // More distinct names than the bounded cache can retain, including
+    // names longer than its admission limit.
+    $row = [];
+    $expected = [];
+    for ($i = 0; $i < 300; ++$i) {
+        $row['field_' . $i . '_value'] = $i;
+        $expected['field' . $i . 'Value'] = $i;
     }
+    $longName = str_repeat('x', 200);
+    $row[$longName . '_value'] = 'long';
+    $expected[$longName . 'Value'] = 'long';
+    Assert::assertSame($expected, $fetcher($row));
+    Assert::assertSame($expected, $fetcher($row));
 
-    public function testMappingUsesCurrentConfigurationAndCloneState(): void
-    {
-        $caster = $this->createStub(CasterInterface::class);
-        $caster->method('cast')->willReturnCallback(static fn(mixed $value): int => (int) $value);
-        $provider = $this->createStub(CasterProviderInterface::class);
-        $provider->method('provide')->willReturnMap([['integer', $caster]]);
-        $fetcher = new MappingContractFetcher($this->createStub(DatabaseInterface::class), $provider);
-        $clone = clone $fetcher;
-        $clone->renameAmount('newAmount');
+    // Multiple names can map to one output key: preserve row order and
+    // the original last-write-wins semantics.
+    Assert::assertSame(['firstName' => 'second'], $fetcher(['first_name' => 'first', 'firstName' => 'second']));
+    Assert::assertSame(['firstName' => 'Alice'], $fetcher(['first_name' => 'Alice']));
+});
 
-        $row = ['total_value' => '5'];
-        $query = (object) ['increment' => 1];
-        self::assertSame(['amount' => 6, 'rawTotal' => '5'], $fetcher($row, $query));
-        self::assertSame(['newAmount' => 6, 'rawTotal' => '5'], $clone($row, $query));
-    }
+it('overridden naming hook is not bypassed by default mapping', function (): void {
+    $fetcher = new CustomSnakeMappingFetcher($this->createStub(DatabaseInterface::class));
+    Assert::assertSame(['custom_first_name' => 'Alice'], $fetcher(['first_name' => 'Alice']));
+});
 
-    public function testDefaultMappingUsesCurrentFieldAndCasterConfiguration(): void
-    {
-        $caster = $this->createStub(CasterInterface::class);
-        $caster->method('cast')->willReturnCallback(static fn(mixed $value): int => (int) $value);
-        $provider = $this->createStub(CasterProviderInterface::class);
-        $provider->method('provide')->willReturnMap([['integer', $caster]]);
-        $fetcher = new PlainMappingFetcher($this->createStub(DatabaseInterface::class), $provider);
-        $row = ['total_value' => '5', 'first_name' => 'Alice', 'hidden_value' => 'hidden'];
+it('missing caster provider fails through public fetch', function (): void {
+    $fetcher = new MappingContractFetcher($this->createStub(DatabaseInterface::class));
+    $this->expectException(\RuntimeException::class);
+    $this->expectExceptionMessage('Caster "integer" is registered for field "total_value", but CasterProvider is not provided');
 
-        self::assertSame(['amount' => '5', 'firstName' => 'Alice'], $fetcher($row));
-        $fetcher->enableAmountCaster();
-        self::assertSame(['amount' => 5, 'firstName' => 'Alice'], $fetcher($row));
-    }
+    $fetcher(['total_value' => '5'], (object) ['increment' => 1]);
+});
 
-    public function testCachedDefaultNamesPreserveMutablePolicyAndVariedProjections(): void
-    {
-        $fetcher = new MutableDefaultMappingFetcher($this->createStub(DatabaseInterface::class));
+it('unknown caster fails through public fetch', function (): void {
+    $provider = $this->createStub(CasterProviderInterface::class);
+    $provider->method('provide')->willReturn(null);
+    $fetcher = new MappingContractFetcher($this->createStub(DatabaseInterface::class), $provider);
+    $this->expectException(\RuntimeException::class);
+    $this->expectExceptionMessage('Caster "integer" for field "total_value" cannot be resolved from CasterProvider');
 
-        self::assertSame(['firstName' => 'Alice'], $fetcher(['first_name' => 'Alice']));
-        $fetcher->rename('first_name', 'displayName');
-        self::assertSame(['displayName' => 'Alice'], $fetcher(['first_name' => 'Alice']));
-        $fetcher->resetMapping();
-        $fetcher->autoMap(false);
-        self::assertSame(['first_name' => 'Alice'], $fetcher(['first_name' => 'Alice']));
-        $fetcher->autoMap(true);
-
-        // More distinct names than the bounded cache can retain, including
-        // names longer than its admission limit.
-        $row = [];
-        $expected = [];
-        for ($i = 0; $i < 300; ++$i) {
-            $row['field_' . $i . '_value'] = $i;
-            $expected['field' . $i . 'Value'] = $i;
-        }
-        $longName = str_repeat('x', 200);
-        $row[$longName . '_value'] = 'long';
-        $expected[$longName . 'Value'] = 'long';
-        self::assertSame($expected, $fetcher($row));
-        self::assertSame($expected, $fetcher($row));
-
-        // Multiple names can map to one output key: preserve row order and
-        // the original last-write-wins semantics.
-        self::assertSame(['firstName' => 'second'], $fetcher(['first_name' => 'first', 'firstName' => 'second']));
-        self::assertSame(['firstName' => 'Alice'], $fetcher(['first_name' => 'Alice']));
-    }
-
-    public function testOverriddenNamingHookIsNotBypassedByDefaultMapping(): void
-    {
-        $fetcher = new CustomSnakeMappingFetcher($this->createStub(DatabaseInterface::class));
-        self::assertSame(['custom_first_name' => 'Alice'], $fetcher(['first_name' => 'Alice']));
-    }
-
-    public function testMissingCasterProviderFailsThroughPublicFetch(): void
-    {
-        $fetcher = new MappingContractFetcher($this->createStub(DatabaseInterface::class));
-        $this->expectException(\RuntimeException::class);
-        $this->expectExceptionMessage('Caster "integer" is registered for field "total_value", but CasterProvider is not provided');
-
-        $fetcher(['total_value' => '5'], (object) ['increment' => 1]);
-    }
-
-    public function testUnknownCasterFailsThroughPublicFetch(): void
-    {
-        $provider = $this->createStub(CasterProviderInterface::class);
-        $provider->method('provide')->willReturn(null);
-        $fetcher = new MappingContractFetcher($this->createStub(DatabaseInterface::class), $provider);
-        $this->expectException(\RuntimeException::class);
-        $this->expectExceptionMessage('Caster "integer" for field "total_value" cannot be resolved from CasterProvider');
-
-        $fetcher(['total_value' => '5'], (object) ['increment' => 1]);
-    }
-}
+    $fetcher(['total_value' => '5'], (object) ['increment' => 1]);
+});
 
 final class MappingContractFetcher extends DataFetcher
 {

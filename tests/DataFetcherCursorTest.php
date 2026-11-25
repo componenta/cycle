@@ -14,72 +14,62 @@ use Cycle\Database\DatabaseInterface;
 use Cycle\Database\Driver\MySQL\MySQLDriver;
 use Cycle\Database\Injection\Fragment;
 use Cycle\Database\Query\SelectQuery;
-use PHPUnit\Framework\TestCase;
-use PHPUnit\Framework\Attributes\DataProvider;
+use PHPUnit\Framework\Assert;
 use RuntimeException;
 
-final class DataFetcherCursorTest extends TestCase
+function dataFetcherCursorDatabase(bool $queryCache): DatabaseInterface
 {
-    public function testQueryCachingPreservesUnbufferedPagesAndTheirRelations(): void
-    {
-        foreach ([false, true] as $queryCache) {
-            $db = $this->database($queryCache);
-            $fetcher = new CursorFetcher($db);
-            try {
-                $first = $fetcher(new CursorPage());
-                $second = $fetcher(new CursorPage());
-                self::assertSame([['id' => 1, 'relation' => 7]], $first->results);
-                self::assertSame([['id' => 1, 'relation' => 7]], $second->results);
-            } finally {
-                $db->getDriver()->disconnect();
-            }
-        }
+    if (getenv('CYCLE_TEST_DB_DRIVER') !== 'mysql') {
+        Assert::markTestSkipped('Set CYCLE_TEST_DB_DRIVER=mysql and CYCLE_TEST_DB_* to test unbuffered MySQL reads.');
     }
+    return new Database('cursor-test', '', MySQLDriver::create(new MySQLDriverConfig(
+        new TcpConnectionConfig(
+            database: getenv('CYCLE_TEST_DB_NAME') ?: 'information_schema',
+            host: getenv('CYCLE_TEST_DB_HOST') ?: '127.0.0.1',
+            port: getenv('CYCLE_TEST_DB_PORT') ?: 3306,
+            user: getenv('CYCLE_TEST_DB_USER') ?: 'root',
+            password: getenv('CYCLE_TEST_DB_PASSWORD') ?: '',
+            options: [\Pdo\Mysql::ATTR_USE_BUFFERED_QUERY => false],
+        ),
+        queryCache: $queryCache,
+    )));
+}
 
-    #[DataProvider('readModes')]
-    public function testRowFailurePreservesTheExceptionAndConnection(?object $query): void
-    {
-        $db = $this->database(true);
-        $failure = new RuntimeException('row conversion failed');
-        $fetcher = new FailingCursorFetcher($db, $failure);
+it('query caching preserves unbuffered pages and their relations', function (): void {
+    foreach ([false, true] as $queryCache) {
+        $db = dataFetcherCursorDatabase($queryCache);
+        $fetcher = new CursorFetcher($db);
         try {
-            try {
-                $fetcher($query);
-                self::fail('The row conversion must fail.');
-            } catch (RuntimeException $caught) {
-                self::assertSame($failure, $caught);
-            }
-            self::assertSame([['id' => 1, 'relation' => 7]], (new CursorFetcher($db))(new CursorPage())->results);
+            $first = $fetcher(new CursorPage());
+            $second = $fetcher(new CursorPage());
+            Assert::assertSame([['id' => 1, 'relation' => 7]], $first->results);
+            Assert::assertSame([['id' => 1, 'relation' => 7]], $second->results);
         } finally {
             $db->getDriver()->disconnect();
         }
     }
+});
 
-    public static function readModes(): iterable
-    {
-        yield 'page without total' => [new CursorPage()];
-        yield 'page with total' => [new CountedCursorPage()];
-        yield 'unpaginated' => [null];
-    }
-
-    private function database(bool $queryCache): DatabaseInterface
-    {
-        if (getenv('CYCLE_TEST_DB_DRIVER') !== 'mysql') {
-            self::markTestSkipped('Set CYCLE_TEST_DB_DRIVER=mysql and CYCLE_TEST_DB_* to test unbuffered MySQL reads.');
+it('row failure preserves the exception and connection', function (?object $query): void {
+    $db = dataFetcherCursorDatabase(true);
+    $failure = new RuntimeException('row conversion failed');
+    $fetcher = new FailingCursorFetcher($db, $failure);
+    try {
+        try {
+            $fetcher($query);
+            Assert::fail('The row conversion must fail.');
+        } catch (RuntimeException $caught) {
+            Assert::assertSame($failure, $caught);
         }
-        return new Database('cursor-test', '', MySQLDriver::create(new MySQLDriverConfig(
-            new TcpConnectionConfig(
-                database: getenv('CYCLE_TEST_DB_NAME') ?: 'information_schema',
-                host: getenv('CYCLE_TEST_DB_HOST') ?: '127.0.0.1',
-                port: getenv('CYCLE_TEST_DB_PORT') ?: 3306,
-                user: getenv('CYCLE_TEST_DB_USER') ?: 'root',
-                password: getenv('CYCLE_TEST_DB_PASSWORD') ?: '',
-                options: [\Pdo\Mysql::ATTR_USE_BUFFERED_QUERY => false],
-            ),
-            queryCache: $queryCache,
-        )));
+        Assert::assertSame([['id' => 1, 'relation' => 7]], (new CursorFetcher($db))(new CursorPage())->results);
+    } finally {
+        $db->getDriver()->disconnect();
     }
-}
+})->with(static function (): iterable {
+    yield 'page without total' => [new CursorPage()];
+    yield 'page with total' => [new CountedCursorPage()];
+    yield 'unpaginated' => [null];
+});
 
 class CursorPage implements PaginableInterface
 {

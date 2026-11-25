@@ -11,142 +11,138 @@ use Cycle\Migrations\Config\MigrationConfig;
 use Cycle\ORM\SchemaInterface;
 use Cycle\ORM\Parser\CastableInterface;
 use Cycle\ORM\ORMInterface;
-use PHPUnit\Framework\TestCase;
+use PHPUnit\Framework\Assert;
 
-final class ConfigIntegrationTest extends TestCase {
-    private function container(array $additionalConfig = [], array $environment = []): \Componenta\Config\ContainerValue {
-        $composition = (new ConfigFactory())->create(
-            new Environment(array_replace(['DB_DRIVER' => 'sqlite', 'DB_NAME' => ':memory:'], $environment)),
-            new ConfigProvider(),
-            static fn (): array => [ConfigKey::ROOT => [ConfigKey::MIGRATIONS => ['namespace' => 'ExampleMigrations'], ...$additionalConfig]],
-        );
-        return (new ContainerFactory())->create($composition->config, $composition->dependencies);
-    }
-    public function testCreatesDatabaseFromTheConfiguredEnvironment(): void {
-        $database = $this->container()->get(DatabaseManager::class)->database();
-        self::assertSame('default', $database->getName());
-        self::assertSame(1, (int) $database->query('SELECT 1 AS value')->fetch()['value']);
-    }
-    public function testCreatesSchemaAndMigrationSettingsFromRuntimeConfig(): void {
-        $container = $this->container();
-        self::assertSame([], iterator_to_array($container->get(SchemaInterface::class)->getRoles()));
-        self::assertSame('ExampleMigrations', $container->get(MigrationConfig::class)->getNamespace());
-    }
-
-    public function testCreatesDefaultTypecastsWithoutApplicationClasses(): void
-    {
-        $container = $this->container();
-        $orm = $container->get(ORMInterface::class);
-        $database = $container->get(DatabaseManager::class)->database();
-        $schema = new \Cycle\ORM\Schema([
-            'record' => [SchemaInterface::ENTITY => \stdClass::class, SchemaInterface::TYPECAST => ['created' => 'carbon']],
-        ]);
-
-        $handler = $orm->getFactory()->typecast($schema, $database, 'record');
-        self::assertInstanceOf(CastableInterface::class, $handler);
-        self::assertInstanceOf(\Carbon\CarbonImmutable::class, $handler->cast(['created' => '2026-11-25 12:00:00'])['created']);
-    }
-
-    public function testApplicationCanRegisterAdditionalTypecastHandlers(): void
-    {
-        $container = $this->container([ConfigKey::TYPECAST_HANDLERS => [ExampleTypecast::class]]);
-        $orm = $container->get(ORMInterface::class);
-        $database = $container->get(DatabaseManager::class)->database();
-        $schema = new \Cycle\ORM\Schema([
-            'record' => [SchemaInterface::ENTITY => \stdClass::class, SchemaInterface::TYPECAST => ['name' => 'example']],
-        ]);
-
-        $handler = $orm->getFactory()->typecast($schema, $database, 'record');
-        self::assertInstanceOf(CastableInterface::class, $handler);
-        self::assertSame(['name' => 'EXAMPLE'], $handler->cast(['name' => 'example']));
-    }
-
-    public function testUuidRulesDoNotLeakAcrossRoles(): void
-    {
-        $container = $this->container();
-        $factory = $container->get(ORMInterface::class)->getFactory();
-        $database = $container->get(DatabaseManager::class)->database();
-        $schema = new \Cycle\ORM\Schema([
-            'first' => [SchemaInterface::ENTITY => \stdClass::class, SchemaInterface::TYPECAST => ['id' => 'uuid']],
-            'second' => [SchemaInterface::ENTITY => ExampleTypecast::class, SchemaInterface::TYPECAST => ['id' => 'int']],
-        ]);
-
-        $first = $factory->typecast($schema, $database, 'first');
-        $second = $factory->typecast($schema, $database, 'second');
-
-        self::assertSame(['id' => 7], $second->cast(['id' => '7']));
-        self::assertSame(
-            '018f0000-0000-7000-8000-000000000001',
-            $first->cast(['id' => '018f0000-0000-7000-8000-000000000001'])['id']->toString(),
-        );
-    }
-
-    public function testApplicationFactoryCanReplaceUuidHandlerAndRegisterAdditionalRoleLocalHandlers(): void
-    {
-        $composition = (new ConfigFactory())->create(
-            new Environment(['DB_DRIVER' => 'sqlite', 'DB_NAME' => ':memory:']),
-            new ConfigProvider(),
-            new ApplicationTypecastConfigProvider(),
-        );
-        $container = (new ContainerFactory())->create($composition->config, $composition->dependencies);
-        $factory = $container->get(ORMInterface::class)->getFactory();
-        $db = $container->get(DatabaseManager::class)->database();
-        $schema = new \Cycle\ORM\Schema([
-            'first' => [
-                SchemaInterface::ENTITY => \stdClass::class,
-                SchemaInterface::TYPECAST => ['id' => 'uuid', 'name' => 'application'],
-            ],
-            'second' => [
-                SchemaInterface::ENTITY => ExampleTypecast::class,
-                SchemaInterface::TYPECAST => ['other' => 'uuid', 'label' => 'application'],
-            ],
-        ]);
-
-        $first = $factory->typecast($schema, $db, 'first');
-        $second = $factory->typecast($schema, $db, 'second');
-
-        self::assertSame(
-            ['id' => 'custom:one', 'name' => 'first:alice', 'other' => 'untouched'],
-            $first->cast(['id' => 'one', 'name' => 'alice', 'other' => 'untouched']),
-        );
-        self::assertSame(
-            ['id' => 'untouched', 'other' => 'custom:two', 'label' => 'second:bob'],
-            $second->cast(['id' => 'untouched', 'other' => 'two', 'label' => 'bob']),
-        );
-    }
-
-    public function testPostgresUuidTypecastRoundTripsBinaryDataWithZeroBytes(): void
-    {
-        if (getenv('CYCLE_TEST_DB_DRIVER') !== 'postgres') {
-            self::markTestSkipped('This test requires a configured PostgreSQL database.');
-        }
-        $env = ['DB_DRIVER' => 'postgres'];
-        foreach (['NAME', 'HOST', 'PORT', 'USER', 'PASSWORD', 'SCHEMA'] as $key) {
-            $value = getenv('CYCLE_TEST_DB_' . $key);
-            if ($value !== false) {
-                $env['DB_' . $key] = $value;
-            }
-        }
-        $container = $this->container(environment: $env);
-        $database = $container->get(DatabaseManager::class)->database();
-        $factory = $container->get(ORMInterface::class)->getFactory();
-        $schema = new \Cycle\ORM\Schema([
-            'record' => [SchemaInterface::ENTITY => \stdClass::class, SchemaInterface::TYPECAST => ['id' => 'uuid']],
-        ]);
-
-        $handler = $factory->typecast($schema, $database, 'record');
-        $uuid = \Componenta\Identity\Uuid::fromString('018f0000-0000-7000-8000-000000000001');
-        $data = $handler->uncast(['id' => $uuid]);
-        $statement = $database->query('SELECT CAST(? AS BYTEA) AS id', [$data['id']]);
-        try {
-            $row = $statement->fetch();
-        } finally {
-            $statement->close();
-        }
-
-        self::assertSame($uuid->toString(), $handler->cast($row)['id']->toString());
-    }
+function configIntegrationContainer(array $additionalConfig = [], array $environment = []): \Componenta\Config\ContainerValue
+{
+    $composition = (new ConfigFactory())->create(
+        new Environment(array_replace(['DB_DRIVER' => 'sqlite', 'DB_NAME' => ':memory:'], $environment)),
+        new ConfigProvider(),
+        static fn (): array => [ConfigKey::ROOT => [ConfigKey::MIGRATIONS => ['namespace' => 'ExampleMigrations'], ...$additionalConfig]],
+    );
+    return (new ContainerFactory())->create($composition->config, $composition->dependencies);
 }
+
+it('creates database from the configured environment', function (): void {
+    $database = configIntegrationContainer()->get(DatabaseManager::class)->database();
+    Assert::assertSame('default', $database->getName());
+    Assert::assertSame(1, (int) $database->query('SELECT 1 AS value')->fetch()['value']);
+});
+
+it('creates schema and migration settings from runtime config', function (): void {
+    $container = configIntegrationContainer();
+    Assert::assertSame([], iterator_to_array($container->get(SchemaInterface::class)->getRoles()));
+    Assert::assertSame('ExampleMigrations', $container->get(MigrationConfig::class)->getNamespace());
+});
+
+it('creates default typecasts without application classes', function (): void {
+    $container = configIntegrationContainer();
+    $orm = $container->get(ORMInterface::class);
+    $database = $container->get(DatabaseManager::class)->database();
+    $schema = new \Cycle\ORM\Schema([
+        'record' => [SchemaInterface::ENTITY => \stdClass::class, SchemaInterface::TYPECAST => ['created' => 'carbon']],
+    ]);
+
+    $handler = $orm->getFactory()->typecast($schema, $database, 'record');
+    Assert::assertInstanceOf(CastableInterface::class, $handler);
+    Assert::assertInstanceOf(\Carbon\CarbonImmutable::class, $handler->cast(['created' => '2026-11-25 12:00:00'])['created']);
+});
+
+it('application can register additional typecast handlers', function (): void {
+    $container = configIntegrationContainer([ConfigKey::TYPECAST_HANDLERS => [ExampleTypecast::class]]);
+    $orm = $container->get(ORMInterface::class);
+    $database = $container->get(DatabaseManager::class)->database();
+    $schema = new \Cycle\ORM\Schema([
+        'record' => [SchemaInterface::ENTITY => \stdClass::class, SchemaInterface::TYPECAST => ['name' => 'example']],
+    ]);
+
+    $handler = $orm->getFactory()->typecast($schema, $database, 'record');
+    Assert::assertInstanceOf(CastableInterface::class, $handler);
+    Assert::assertSame(['name' => 'EXAMPLE'], $handler->cast(['name' => 'example']));
+});
+
+it('uuid rules do not leak across roles', function (): void {
+    $container = configIntegrationContainer();
+    $factory = $container->get(ORMInterface::class)->getFactory();
+    $database = $container->get(DatabaseManager::class)->database();
+    $schema = new \Cycle\ORM\Schema([
+        'first' => [SchemaInterface::ENTITY => \stdClass::class, SchemaInterface::TYPECAST => ['id' => 'uuid']],
+        'second' => [SchemaInterface::ENTITY => ExampleTypecast::class, SchemaInterface::TYPECAST => ['id' => 'int']],
+    ]);
+
+    $first = $factory->typecast($schema, $database, 'first');
+    $second = $factory->typecast($schema, $database, 'second');
+
+    Assert::assertSame(['id' => 7], $second->cast(['id' => '7']));
+    Assert::assertSame(
+        '018f0000-0000-7000-8000-000000000001',
+        $first->cast(['id' => '018f0000-0000-7000-8000-000000000001'])['id']->toString(),
+    );
+});
+
+it('application factory can replace uuid handler and register additional role local handlers', function (): void {
+    $composition = (new ConfigFactory())->create(
+        new Environment(['DB_DRIVER' => 'sqlite', 'DB_NAME' => ':memory:']),
+        new ConfigProvider(),
+        new ApplicationTypecastConfigProvider(),
+    );
+    $container = (new ContainerFactory())->create($composition->config, $composition->dependencies);
+    $factory = $container->get(ORMInterface::class)->getFactory();
+    $db = $container->get(DatabaseManager::class)->database();
+    $schema = new \Cycle\ORM\Schema([
+        'first' => [
+            SchemaInterface::ENTITY => \stdClass::class,
+            SchemaInterface::TYPECAST => ['id' => 'uuid', 'name' => 'application'],
+        ],
+        'second' => [
+            SchemaInterface::ENTITY => ExampleTypecast::class,
+            SchemaInterface::TYPECAST => ['other' => 'uuid', 'label' => 'application'],
+        ],
+    ]);
+
+    $first = $factory->typecast($schema, $db, 'first');
+    $second = $factory->typecast($schema, $db, 'second');
+
+    Assert::assertSame(
+        ['id' => 'custom:one', 'name' => 'first:alice', 'other' => 'untouched'],
+        $first->cast(['id' => 'one', 'name' => 'alice', 'other' => 'untouched']),
+    );
+    Assert::assertSame(
+        ['id' => 'untouched', 'other' => 'custom:two', 'label' => 'second:bob'],
+        $second->cast(['id' => 'untouched', 'other' => 'two', 'label' => 'bob']),
+    );
+});
+
+it('postgres uuid typecast round trips binary data with zero bytes', function (): void {
+    if (getenv('CYCLE_TEST_DB_DRIVER') !== 'postgres') {
+        Assert::markTestSkipped('This test requires a configured PostgreSQL database.');
+    }
+    $env = ['DB_DRIVER' => 'postgres'];
+    foreach (['NAME', 'HOST', 'PORT', 'USER', 'PASSWORD', 'SCHEMA'] as $key) {
+        $value = getenv('CYCLE_TEST_DB_' . $key);
+        if ($value !== false) {
+            $env['DB_' . $key] = $value;
+        }
+    }
+    $container = configIntegrationContainer(environment: $env);
+    $database = $container->get(DatabaseManager::class)->database();
+    $factory = $container->get(ORMInterface::class)->getFactory();
+    $schema = new \Cycle\ORM\Schema([
+        'record' => [SchemaInterface::ENTITY => \stdClass::class, SchemaInterface::TYPECAST => ['id' => 'uuid']],
+    ]);
+
+    $handler = $factory->typecast($schema, $database, 'record');
+    $uuid = \Componenta\Identity\Uuid::fromString('018f0000-0000-7000-8000-000000000001');
+    $data = $handler->uncast(['id' => $uuid]);
+    $statement = $database->query('SELECT CAST(? AS BYTEA) AS id', [$data['id']]);
+    try {
+        $row = $statement->fetch();
+    } finally {
+        $statement->close();
+    }
+
+    Assert::assertSame($uuid->toString(), $handler->cast($row)['id']->toString());
+});
 
 final class ExampleTypecast implements CastableInterface
 {

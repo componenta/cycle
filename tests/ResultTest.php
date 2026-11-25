@@ -5,25 +5,20 @@ declare(strict_types=1);
 namespace Componenta\Cycle\Tests;
 
 use Componenta\Cycle\Result;
-use PHPUnit\Framework\TestCase;
+use PHPUnit\Framework\Assert;
 
-final class ResultTest extends TestCase
-{
-    public function testReportsSizeAndEmptyState(): void
-    {
-        $result = new Result(['a', 'b'], 10);
+it('reports size and empty state', function (): void {
+    $result = new Result(['a', 'b'], 10);
 
-        self::assertFalse($result->isEmpty());
-        self::assertSame(2, $result->size());
-        self::assertSame(10, $result->count);
-    }
+    expect($result->isEmpty())->toBeFalse();
+    Assert::assertSame(2, $result->size());
+    Assert::assertSame(10, $result->count);
+});
 
-    public function testEmptyResult(): void
-    {
-        $result = new Result([], null);
+it('empty result', function (): void {
+    $result = new Result([], null);
 
-        self::assertTrue($result->isEmpty());
-        self::assertSame(0, $result->size());
-        self::assertNull($result->count);
-    }
-}
+    expect($result->isEmpty())->toBeTrue();
+    Assert::assertSame(0, $result->size());
+    expect($result->count)->toBeNull();
+});

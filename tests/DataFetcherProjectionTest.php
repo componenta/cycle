@@ -14,7 +14,7 @@ use Componenta\Cycle\Query\SortableInterface;
 use Componenta\DI\ContainerFactory;
 use Cycle\Database\DatabaseManager;
 use Cycle\Database\DatabaseInterface;
-use PHPUnit\Framework\TestCase;
+use PHPUnit\Framework\Assert;
 
 final class ProjectionQuery implements SelectableInterface, SortableInterface
 {
@@ -47,62 +47,54 @@ final class PublicProjectionFetcher extends ProjectionFetcher
     }
 }
 
-final class DataFetcherProjectionTest extends TestCase
+function dataFetcherProjectionDatabase(): DatabaseInterface
 {
-    private function database(): DatabaseInterface
-    {
-        $composition = (new ConfigFactory())->create(
-            new Environment(['DB_DRIVER' => 'sqlite', 'DB_NAME' => ':memory:']),
-            new ConfigProvider(),
-        );
-        $db = (new ContainerFactory())->create($composition->config, $composition->dependencies)
-            ->get(DatabaseManager::class)->database();
-        $db->execute('CREATE TABLE records (id INTEGER, title TEXT, secret TEXT)');
-        $db->execute("INSERT INTO records VALUES (1, 'one', 'hidden'), (2, 'two', 'hidden')");
-        return $db;
-    }
-
-    public function testPublicProjectionDefaultsToAllowedFieldsAndMapsSortingAliases(): void
-    {
-        $fetch = new PublicProjectionFetcher($this->database());
-
-        self::assertSame(
-            [['id' => 2, 'title' => 'two'], ['id' => 1, 'title' => 'one']],
-            $fetch(new ProjectionQuery(orderBy: ['identifier' => Direction::DESC])),
-        );
-        self::assertSame(
-            [['id' => 1], ['id' => 2]],
-            $fetch(new ProjectionQuery(['identifier'], ['identifier' => Direction::ASC])),
-        );
-    }
-
-    public function testPublicProjectionRejectsUnlistedColumns(): void
-    {
-        $fetch = new PublicProjectionFetcher($this->database());
-        $this->expectException(\InvalidArgumentException::class);
-        $fetch(new ProjectionQuery(['secret']));
-    }
-
-    public function testPublicProjectionRejectsUnlistedSortColumns(): void
-    {
-        $fetch = new PublicProjectionFetcher($this->database());
-        $this->expectException(\InvalidArgumentException::class);
-        $fetch(new ProjectionQuery(orderBy: ['secret' => Direction::ASC]));
-    }
-
-    public function testRejectsNonStringRequestedColumnsEvenIfTheyCanBeCoercedToStrings(): void
-    {
-        $fetch = new PublicProjectionFetcher($this->database());
-        $this->expectException(\InvalidArgumentException::class);
-        $fetch(new ProjectionQuery([new class implements \Stringable {
-            public function __toString(): string { return 'title'; }
-        }]));
-    }
-
-    public function testTrustedQueryRejectsSqlExpressionsAsRequestedColumns(): void
-    {
-        $fetch = new ProjectionFetcher($this->database());
-        $this->expectException(\InvalidArgumentException::class);
-        $fetch(new ProjectionQuery(['LOWER(secret)']));
-    }
+    $composition = (new ConfigFactory())->create(
+        new Environment(['DB_DRIVER' => 'sqlite', 'DB_NAME' => ':memory:']),
+        new ConfigProvider(),
+    );
+    $db = (new ContainerFactory())->create($composition->config, $composition->dependencies)
+        ->get(DatabaseManager::class)->database();
+    $db->execute('CREATE TABLE records (id INTEGER, title TEXT, secret TEXT)');
+    $db->execute("INSERT INTO records VALUES (1, 'one', 'hidden'), (2, 'two', 'hidden')");
+    return $db;
 }
+
+it('public projection defaults to allowed fields and maps sorting aliases', function (): void {
+    $fetch = new PublicProjectionFetcher(dataFetcherProjectionDatabase());
+
+    Assert::assertSame(
+        [['id' => 2, 'title' => 'two'], ['id' => 1, 'title' => 'one']],
+        $fetch(new ProjectionQuery(orderBy: ['identifier' => Direction::DESC])),
+    );
+    Assert::assertSame(
+        [['id' => 1], ['id' => 2]],
+        $fetch(new ProjectionQuery(['identifier'], ['identifier' => Direction::ASC])),
+    );
+});
+
+it('public projection rejects unlisted columns', function (): void {
+    $fetch = new PublicProjectionFetcher(dataFetcherProjectionDatabase());
+    $this->expectException(\InvalidArgumentException::class);
+    $fetch(new ProjectionQuery(['secret']));
+});
+
+it('public projection rejects unlisted sort columns', function (): void {
+    $fetch = new PublicProjectionFetcher(dataFetcherProjectionDatabase());
+    $this->expectException(\InvalidArgumentException::class);
+    $fetch(new ProjectionQuery(orderBy: ['secret' => Direction::ASC]));
+});
+
+it('rejects non string requested columns even if they can be coerced to strings', function (): void {
+    $fetch = new PublicProjectionFetcher(dataFetcherProjectionDatabase());
+    $this->expectException(\InvalidArgumentException::class);
+    $fetch(new ProjectionQuery([new class implements \Stringable {
+        public function __toString(): string { return 'title'; }
+    }]));
+});
+
+it('trusted query rejects sql expressions as requested columns', function (): void {
+    $fetch = new ProjectionFetcher(dataFetcherProjectionDatabase());
+    $this->expectException(\InvalidArgumentException::class);
+    $fetch(new ProjectionQuery(['LOWER(secret)']));
+});
