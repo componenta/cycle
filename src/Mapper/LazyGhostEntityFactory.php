@@ -100,13 +100,17 @@ class LazyGhostEntityFactory
             $relation = $relations[$property] ?? null;
 
             if ($relation !== null && $value instanceof ReferenceInterface) {
-                if ($isLazyUninitialized) {
+                $prop = $this->getProperty($reflection, $property);
+
+                // A previously hydrated property is no longer lazy, even
+                // when other properties keep the entity itself uninitialized.
+                // Storing a pending reference for it would expose stale data.
+                if ($isLazyUninitialized && ($prop === null || $prop->isLazy($entity))) {
                     $pending[$property] = ['ref' => $value, 'relation' => $relation];
                 } else {
-                    $resolved = $relation->collect($relation->resolve($value, true));
-                    $prop = $this->getProperty($reflection, $property);
-
+                    unset($pending[$property]);
                     if ($prop !== null && !($prop->isReadOnly() && $prop->isInitialized($entity))) {
+                        $resolved = $relation->collect($relation->resolve($value, true));
                         $prop->setRawValueWithoutLazyInitialization($entity, $resolved);
                     }
                 }

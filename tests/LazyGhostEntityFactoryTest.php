@@ -19,7 +19,7 @@ final class HydratedEntity {
 }
 
 final class LazyGhostEntityFactoryTest extends TestCase {
-    private function relationMap(bool $withRelation, ?ActiveRelationInterface $relation = null): RelationMap {
+    private function relationMap(bool $withRelation, ?ActiveRelationInterface $relation = null, ?ActiveRelationInterface $second = null): RelationMap {
         $schema = new Schema([
             'record' => [
                 SchemaInterface::ENTITY => HydratedEntity::class,
@@ -29,12 +29,22 @@ final class LazyGhostEntityFactoryTest extends TestCase {
                         Relation::TARGET => 'target',
                         Relation::SCHEMA => [],
                     ],
-                ] : [],
+                ] + ($second === null ? [] : [
+                    'other' => [
+                        Relation::TYPE => Relation::BELONGS_TO,
+                        Relation::TARGET => 'target',
+                        Relation::SCHEMA => [],
+                    ],
+                ]) : [],
             ],
             'target' => [SchemaInterface::ENTITY => \stdClass::class, SchemaInterface::RELATIONS => []],
         ]);
         $factory = $this->createStub(FactoryInterface::class);
-        $factory->method('relation')->willReturn($relation ?? $this->createStub(ActiveRelationInterface::class));
+        $primary = $relation ?? $this->createStub(ActiveRelationInterface::class);
+        $factory->method('relation')->willReturnCallback(
+            static fn (ORMInterface $orm, SchemaInterface $schema, string $role, string $name): ActiveRelationInterface =>
+                $name === 'other' ? $second : $primary,
+        );
         $orm = $this->createStub(ORMInterface::class);
         $orm->method('getFactory')->willReturn($factory);
         $orm->method('getSchema')->willReturn($schema);
@@ -85,6 +95,51 @@ final class LazyGhostEntityFactoryTest extends TestCase {
 
         self::assertSame(['related' => $related], $factory->extractRelations($map, $entity));
         self::assertSame($related, $entity->related);
+    }
+
+    public function testNewReferenceReplacesAnAlreadyLoadedPropertyOnAPartlyLazyEntity(): void
+    {
+        $old = new \stdClass();
+        $replacement = new \stdClass();
+        $other = new \stdClass();
+        $replacementReference = $this->createStub(\Cycle\ORM\Reference\ReferenceInterface::class);
+        $otherReference = $this->createStub(\Cycle\ORM\Reference\ReferenceInterface::class);
+
+        $firstRelation = $this->createMock(ActiveRelationInterface::class);
+        $firstRelation->expects(self::once())->method('resolve')->with($replacementReference, true)->willReturn($replacement);
+        $firstRelation->method('collect')->willReturnArgument(0);
+        $otherRelation = $this->createMock(ActiveRelationInterface::class);
+        $otherRelation->expects(self::once())->method('resolve')->with($otherReference, true)->willReturn($other);
+        $otherRelation->method('collect')->willReturnArgument(0);
+
+        $map = $this->relationMap(true, $firstRelation, $otherRelation);
+        $factory = new LazyGhostEntityFactory();
+        $entity = $factory->create($map, TwoRelationsEntity::class);
+
+        $factory->upgrade($map, $entity, ['id' => 1, 'related' => $old, 'other' => $otherReference]);
+        self::assertSame($old, $entity->related);
+        $factory->upgrade($map, $entity, ['related' => $replacementReference]);
+
+        self::assertSame($replacement, $entity->related);
+        self::assertSame(['related' => $replacement, 'other' => $otherReference], $factory->extractRelations($map, $entity));
+        self::assertSame($other, $entity->other);
+        self::assertSame(['related' => $replacement, 'other' => $other], $factory->extractRelations($map, $entity));
+    }
+
+    public function testInitializedReadonlyRelationDoesNotResolveAnUnusedReference(): void
+    {
+        $relation = $this->createMock(ActiveRelationInterface::class);
+        $relation->expects(self::never())->method('resolve');
+        $map = $this->relationMap(true, $relation);
+        $factory = new LazyGhostEntityFactory();
+        $entity = $factory->create($map, ReadonlyRelationEntity::class);
+        $related = new \stdClass();
+        $factory->upgrade($map, $entity, ['id' => 1, 'related' => $related]);
+
+        $factory->upgrade($map, $entity, ['related' => $this->createStub(\Cycle\ORM\Reference\ReferenceInterface::class)]);
+
+        self::assertSame($related, $entity->related);
+        self::assertSame(['related' => $related], $factory->extractRelations($map, $entity));
     }
 
     public function testPropertyCacheHonorsTheCurrentRelationMap(): void {
@@ -256,4 +311,18 @@ final class ReadonlyDefaultEntity
     public string $label = 'default';
     public string $uninitialized;
     public ?object $related = null;
+}
+
+
+final class TwoRelationsEntity
+{
+    public int $id;
+    public ?object $related;
+    public ?object $other;
+}
+
+final class ReadonlyRelationEntity
+{
+    public int $id;
+    public readonly ?object $related;
 }
