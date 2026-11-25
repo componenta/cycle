@@ -13,11 +13,13 @@ use Cycle\Database\DatabaseInterface;
 use Cycle\Database\DatabaseManager;
 use Cycle\Database\Injection\Parameter;
 use Cycle\Database\Query\SelectQuery;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
 final class BinaryRelationLoadingTest extends TestCase
 {
-    public function testBinaryKeysLoadAllThreeRelationTypes(): void
+    #[DataProvider('binaryModes')]
+    public function testBinaryKeysLoadAllThreeRelationTypes(bool $explicitBinary, int $additionalKeys): void
     {
         $settings = ['DB_DRIVER' => 'sqlite', 'DB_NAME' => ':memory:'];
         foreach (['DRIVER', 'NAME', 'HOST', 'PORT', 'USER', 'PASSWORD', 'SCHEMA', 'TRUST_SERVER_CERTIFICATE'] as $key) {
@@ -41,7 +43,7 @@ final class BinaryRelationLoadingTest extends TestCase
             'SQLServer' => 'VARBINARY(16)',
             default => 'BLOB',
         };
-        $binary = static fn (string $value): string|Parameter => in_array($db->getType(), ['Postgres', 'SQLServer'], true)
+        $binary = static fn (string $value): string|Parameter => $explicitBinary || in_array($db->getType(), ['Postgres', 'SQLServer'], true)
             ? new Parameter($value, \PDO::PARAM_LOB)
             : $value;
         $seq = static fn (int $value): int|string => $db->getType() === 'SQLServer' ? (string) $value : $value;
@@ -60,6 +62,60 @@ final class BinaryRelationLoadingTest extends TestCase
             $db->execute("INSERT INTO cycle_test_binary_tags VALUES (?, 'tag')", [$binary($tag)]);
             $db->execute('INSERT INTO cycle_test_binary_pivot VALUES (?, ?)', [$binary($root), $binary($tag)]);
 
+            if ($db->getType() === 'SQLite') {
+                $statement = $db->query('SELECT DISTINCT typeof(id) FROM cycle_test_binary_roots');
+                try {
+                    self::assertSame($explicitBinary ? 'blob' : 'text', $statement->fetchColumn());
+                } finally {
+                    $statement->close();
+                }
+            }
+
+            $expected = [
+                ['id' => bin2hex($root), 'ownerId' => bin2hex($owner), 'seq' => $seq(1),
+                    'owner' => 'owner', 'children' => ['child'], 'tags' => ['tag']],
+                ['id' => bin2hex($other), 'ownerId' => null, 'seq' => $seq(2),
+                    'owner' => null, 'children' => [], 'tags' => []],
+                ['id' => bin2hex($repeated), 'ownerId' => bin2hex($owner), 'seq' => $seq(3),
+                    'owner' => 'owner', 'children' => [], 'tags' => []],
+            ];
+
+            // Exercise the second batch for each relation, including a
+            // binary identifier whose bytes are all valid printable text.
+            for ($offset = 0; $offset < $additionalKeys; $offset += 100) {
+                $inserts = [
+                    'roots' => ['values' => [], 'params' => []],
+                    'owners' => ['values' => [], 'params' => []],
+                    'children' => ['values' => [], 'params' => []],
+                    'tags' => ['values' => [], 'params' => []],
+                    'pivot' => ['values' => [], 'params' => []],
+                ];
+                for ($i = $offset; $i < min($additionalKeys, $offset + 100); ++$i) {
+                    $id = $i === 0 ? '0123456789abcdef' : pack('N4', 0x018f00ff, 0x00807000, 0x80ff0000, 100 + $i);
+                    $number = $i + 4;
+                    foreach ([
+                        'roots' => ['(?, ?, ?)', [$binary($id), $binary($id), $number]],
+                        'owners' => ["(?, 'owner')", [$binary($id)]],
+                        'children' => ["(?, 'child')", [$binary($id)]],
+                        'tags' => ["(?, 'tag')", [$binary($id)]],
+                        'pivot' => ['(?, ?)', [$binary($id), $binary($id)]],
+                    ] as $table => [$tuple, $params]) {
+                        $inserts[$table]['values'][] = $tuple;
+                        array_push($inserts[$table]['params'], ...$params);
+                    }
+                    $expected[] = [
+                        'id' => bin2hex($id), 'ownerId' => bin2hex($id), 'seq' => $seq($number),
+                        'owner' => 'owner', 'children' => ['child'], 'tags' => ['tag'],
+                    ];
+                }
+                foreach ($inserts as $table => $insert) {
+                    $db->execute(
+                        'INSERT INTO cycle_test_binary_' . $table . ' VALUES ' . implode(', ', $insert['values']),
+                        $insert['params'],
+                    );
+                }
+            }
+
             $logger = new class extends \Psr\Log\AbstractLogger {
                 public int $reads = 0;
 
@@ -72,17 +128,10 @@ final class BinaryRelationLoadingTest extends TestCase
             };
             $db->getDriver(DatabaseInterface::READ)->setLogger($logger);
 
-            $rows = (new BinaryRelationsFetcher($db))();
+            $rows = (new BinaryRelationsFetcher($db, $explicitBinary))();
 
-            self::assertSame([
-                ['id' => bin2hex($root), 'ownerId' => bin2hex($owner), 'seq' => $seq(1),
-                    'owner' => 'owner', 'children' => ['child'], 'tags' => ['tag']],
-                ['id' => bin2hex($other), 'ownerId' => null, 'seq' => $seq(2),
-                    'owner' => null, 'children' => [], 'tags' => []],
-                ['id' => bin2hex($repeated), 'ownerId' => bin2hex($owner), 'seq' => $seq(3),
-                    'owner' => 'owner', 'children' => [], 'tags' => []],
-            ], $rows);
-            self::assertSame(4, $logger->reads);
+            self::assertSame($expected, $rows);
+            self::assertSame($additionalKeys === 0 ? 4 : 7, $logger->reads);
         } finally {
             foreach (['cycle_test_binary_pivot', 'cycle_test_binary_tags', 'cycle_test_binary_children',
                 'cycle_test_binary_owners', 'cycle_test_binary_roots'] as $table) {
@@ -90,10 +139,22 @@ final class BinaryRelationLoadingTest extends TestCase
             }
         }
     }
+
+    public static function binaryModes(): iterable
+    {
+        yield 'driver default and automatic bytea detection' => [false, 0];
+        yield 'explicit binary binding across multiple batches' => [true, 500];
+    }
+
 }
 
 final class BinaryRelationsFetcher extends DataFetcher
 {
+    public function __construct(DatabaseInterface $db, private readonly bool $explicitBinary)
+    {
+        parent::__construct($db);
+    }
+
     public function __invoke(): array
     {
         return $this->doFetch();
@@ -124,7 +185,8 @@ final class BinaryRelationsFetcher extends DataFetcher
     {
         // PostgreSQL continues to exercise automatic stream detection.
         // SQL Server returns binary keys as strings and needs explicit binding.
-        return $this->db->getType() === 'SQLServer' && in_array($column, ['id', 'owner_id'], true);
+        return ($this->explicitBinary || $this->db->getType() === 'SQLServer')
+            && in_array($column, ['id', 'owner_id'], true);
     }
 
     protected function loadRelations(array &$results, array $rows, ?object $query): void
