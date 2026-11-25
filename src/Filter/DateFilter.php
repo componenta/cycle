@@ -43,7 +43,12 @@ final readonly class DateFilter implements FilterInterface
         }
 
         if (isset($this->date['to'])) {
-            $query = $query->where($this->column, '<=', $this->date['to'] . ' 23:59:59');
+            $end = \DateTimeImmutable::createFromFormat('!Y-m-d', $this->date['to'], new \DateTimeZone('UTC'));
+            if ($end === false || $end->format('Y-m-d') !== $this->date['to']) {
+                throw new \InvalidArgumentException('Invalid end date; expected Y-m-d.');
+            }
+
+            $query = $query->where($this->column, '<', $end->modify('+1 day')->format('Y-m-d H:i:s'));
         }
 
         return $query;
