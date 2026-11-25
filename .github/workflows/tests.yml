@@ -1,0 +1,97 @@
+name: Tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  sqlite:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ['8.4', '8.5']
+    steps:
+      - uses: actions/checkout@v7
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: pdo_sqlite, mbstring, ctype
+          coverage: none
+          tools: composer:v2
+      - run: composer validate --strict
+      - run: composer install --no-interaction --prefer-dist
+      - run: find src tests -name '*.php' -print0 | xargs -0 -n1 php -l
+      - run: composer test
+
+  mysql:
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: test-password
+          MYSQL_ROOT_HOST: '%'
+          MYSQL_DATABASE: cycle_tests
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h localhost"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.5'
+          extensions: pdo_sqlite, pdo_mysql, mbstring, ctype
+          coverage: none
+          tools: composer:v2
+      - run: composer install --no-interaction --prefer-dist
+      - run: composer test
+        env:
+          CYCLE_TEST_DB_DRIVER: mysql
+          CYCLE_TEST_DB_NAME: cycle_tests
+          CYCLE_TEST_DB_HOST: 127.0.0.1
+          CYCLE_TEST_DB_PORT: '3306'
+          CYCLE_TEST_DB_USER: root
+          CYCLE_TEST_DB_PASSWORD: test-password
+
+  postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: cycle
+          POSTGRES_PASSWORD: test-password
+          POSTGRES_DB: cycle_tests
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U cycle -d cycle_tests"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.5'
+          extensions: pdo_sqlite, pdo_pgsql, mbstring, ctype
+          coverage: none
+          tools: composer:v2
+      - run: composer install --no-interaction --prefer-dist
+      - run: composer test
+        env:
+          CYCLE_TEST_DB_DRIVER: postgres
+          CYCLE_TEST_DB_NAME: cycle_tests
+          CYCLE_TEST_DB_HOST: 127.0.0.1
+          CYCLE_TEST_DB_PORT: '5432'
+          CYCLE_TEST_DB_USER: cycle
+          CYCLE_TEST_DB_PASSWORD: test-password
+          CYCLE_TEST_DB_SCHEMA: public
