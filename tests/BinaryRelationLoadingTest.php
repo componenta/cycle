@@ -52,8 +52,8 @@ final class BinaryRelationLoadingTest extends TestCase
             $db->execute("CREATE TABLE cycle_test_binary_children (parent_id $type, label VARCHAR(32))");
             $db->execute("CREATE TABLE cycle_test_binary_tags (id $type PRIMARY KEY, label VARCHAR(32))");
             $db->execute("CREATE TABLE cycle_test_binary_pivot (root_id $type, tag_id $type)");
-            $db->execute('INSERT INTO cycle_test_binary_roots VALUES (?, ?, 1), (?, ?, 2)',
-                [$binary($root), $binary($owner), $binary($other), null]);
+            $db->execute('INSERT INTO cycle_test_binary_roots VALUES (?, ?, 1), (?, NULL, 2)',
+                [$binary($root), $binary($owner), $binary($other)]);
             $db->execute('INSERT INTO cycle_test_binary_roots VALUES (?, ?, 3)', [$binary($repeated), $binary($owner)]);
             $db->execute("INSERT INTO cycle_test_binary_owners VALUES (?, 'owner')", [$binary($owner)]);
             $db->execute("INSERT INTO cycle_test_binary_children VALUES (?, 'child')", [$binary($root)]);
