@@ -140,7 +140,9 @@ class LazyGhostEntityFactory
             unset($this->pendingRefs[$entity]);
         }
 
-        // Phase 2: safe to touch the entity - all relation refs are registered.
+        // Hydrate declared storage before invoking any user code or triggering
+        // the ghost initializer through a dynamic property assignment.
+        $dynamicData = [];
         foreach ($scalarData as $property => $value) {
             $prop = $this->getProperty($reflection, $property);
 
@@ -162,9 +164,15 @@ class LazyGhostEntityFactory
                 if ($reflection->hasMethod('__set') || $this->allowsDynamicProperties($reflection)
                     || property_exists($entity, $property)
                 ) {
-                    $entity->{$property} = $value;
+                    $dynamicData[$property] = $value;
                 }
             }
+        }
+
+        // Dynamic assignment (including __set) can initialize the ghost.
+        // Keep its input order, but never expose partially hydrated fields.
+        foreach ($dynamicData as $property => $value) {
+            $entity->{$property} = $value;
         }
 
         // Resolution can execute application code or recursively load a
