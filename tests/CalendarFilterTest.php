@@ -83,6 +83,31 @@ final class CalendarFilterTest extends TestCase
         }
     }
 
+    #[DataProvider('dateOnlyBounds')]
+    public function testDateRangeIncludesDateOnlyValuesOnBothBoundaries(array $bounds, array $expected): void
+    {
+        $db = $this->database();
+        $type = $db->getType() === 'SQLite' ? 'TEXT' : 'DATE';
+        $query = $db->select('id')->from(new Fragment(
+            "(SELECT 1 AS id, CAST('2025-02-04' AS $type) AS created_at "
+            . "UNION ALL SELECT 2, CAST('2025-02-05' AS $type) "
+            . "UNION ALL SELECT 3, CAST('2025-02-06' AS $type) "
+            . "UNION ALL SELECT 4, CAST(NULL AS $type)) AS items",
+        ))->orderBy('id');
+
+        self::assertSame($expected, array_map('intval', array_column(
+            (new DateFilter($bounds))->apply($query)->fetchAll(),
+            'id',
+        )));
+    }
+
+    public static function dateOnlyBounds(): iterable
+    {
+        yield 'from' => [['from' => '2025-02-05'], [2, 3]];
+        yield 'to' => [['to' => '2025-02-05'], [1, 2]];
+        yield 'single day' => [['from' => '2025-02-05', 'to' => '2025-02-05'], [2]];
+    }
+
     #[DataProvider('invalidDates')]
     public function testRejectsInvalidCalendarDates(array $date): void
     {

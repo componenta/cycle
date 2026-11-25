@@ -54,12 +54,17 @@ final readonly class DateFilter implements FilterInterface
 
         $from = isset($this->date['from']) ? self::parseDate($this->date['from']) : null;
         $to = isset($this->date['to']) ? self::parseDate($this->date['to']) : null;
+        // SQLite compares ISO date/datetime text lexically. A date-only
+        // boundary includes midnight even when a stored value has no time
+        // part. Preserve native datetime boundaries on typed SQL dialects.
+        $format = $query->getDriver()?->getType() === 'SQLite' ? 'Y-m-d' : 'Y-m-d H:i:s';
+
         if ($from !== null) {
-            $query = $query->where($this->column, '>=', $from->format('Y-m-d H:i:s'));
+            $query = $query->where($this->column, '>=', $from->format($format));
         }
 
         if ($to !== null) {
-            $query = $query->where($this->column, '<', $to->modify('+1 day')->format('Y-m-d H:i:s'));
+            $query = $query->where($this->column, '<', $to->modify('+1 day')->format($format));
         }
 
         return $query;
