@@ -97,6 +97,7 @@ class DatabaseConfigFactory
                 database: $env->string('DB_NAME'),
                 host: $env->string('DB_HOST', '127.0.0.1'),
                 port: $env->int('DB_PORT', 1433),
+                trustServerCertificate: $env->bool('DB_TRUST_SERVER_CERTIFICATE', false),
                 user: $env->string('DB_USER'),
                 password: $env->string('DB_PASSWORD', ''),
             ),

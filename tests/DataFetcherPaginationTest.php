@@ -398,10 +398,32 @@ final class DataFetcherPaginationTest extends TestCase
         self::assertFalse($last->hasNextPage);
     }
 
+    public function testSqlServerUnorderedPagesDoNotExposeTechnicalColumns(): void
+    {
+        if (!in_array(getenv('CYCLE_TEST_DB_DRIVER'), ['sqlserver', 'mssql'], true)) {
+            self::markTestSkipped('This scenario requires SQL Server.');
+        }
+
+        $db = $this->database();
+        $source = $db->select('id')->from(new Fragment('(SELECT 7 AS id UNION ALL SELECT 8) AS items'));
+        $fetcher = new PaginationFetcher($db, $source);
+
+        foreach ([new Page(2), new CountedPage(2)] as $query) {
+            $page = $fetcher($query);
+            self::assertCount(2, $page->results);
+            foreach ($page->results as $row) {
+                self::assertSame(['id'], array_keys($row));
+            }
+            self::assertEqualsCanonicalizing([7, 8], array_column($page->results, 'id'));
+            self::assertFalse($page->hasNextPage);
+            self::assertSame($query instanceof CountedPage ? 2 : null, $page->totalCount);
+        }
+    }
+
     private function database(): DatabaseInterface
     {
         $settings = ['DB_DRIVER' => 'sqlite', 'DB_NAME' => ':memory:'];
-        foreach (['DRIVER', 'NAME', 'HOST', 'PORT', 'USER', 'PASSWORD', 'SCHEMA'] as $key) {
+        foreach (['DRIVER', 'NAME', 'HOST', 'PORT', 'USER', 'PASSWORD', 'SCHEMA', 'TRUST_SERVER_CERTIFICATE'] as $key) {
             $value = getenv('CYCLE_TEST_DB_' . $key);
             if ($value !== false) {
                 $settings['DB_' . $key] = $value;

@@ -95,3 +95,47 @@ jobs:
           CYCLE_TEST_DB_USER: cycle
           CYCLE_TEST_DB_PASSWORD: test-password
           CYCLE_TEST_DB_SCHEMA: public
+
+  sqlserver:
+    runs-on: ubuntu-latest
+    services:
+      sqlserver:
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        env:
+          ACCEPT_EULA: 'Y'
+          MSSQL_PID: Developer
+          MSSQL_SA_PASSWORD: CycleTest-2026!
+        ports:
+          - 1433:1433
+    steps:
+      - uses: actions/checkout@v7
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          extensions: pdo_sqlite, pdo_sqlsrv, mbstring, ctype
+          coverage: none
+          tools: composer:v2
+      - run: composer install --no-interaction --prefer-dist
+      - name: Wait for SQL Server
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in {1..30}; do
+            if php -r 'new PDO("sqlsrv:Server=127.0.0.1,1433;Database=master;TrustServerCertificate=1;LoginTimeout=3", "sa", getenv("CYCLE_TEST_DB_PASSWORD"));'; then
+              exit 0
+            fi
+            sleep 2
+          done
+          exit 1
+        env:
+          CYCLE_TEST_DB_PASSWORD: CycleTest-2026!
+      - name: Run SQL Server pagination regression tests
+        run: composer test -- --filter testSqlServer
+        env:
+          CYCLE_TEST_DB_DRIVER: sqlserver
+          CYCLE_TEST_DB_NAME: master
+          CYCLE_TEST_DB_HOST: 127.0.0.1
+          CYCLE_TEST_DB_PORT: '1433'
+          CYCLE_TEST_DB_USER: sa
+          CYCLE_TEST_DB_PASSWORD: CycleTest-2026!
+          CYCLE_TEST_DB_TRUST_SERVER_CERTIFICATE: 'true'
