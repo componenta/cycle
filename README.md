@@ -97,3 +97,7 @@ Pagination tests use SQLite in memory by default. To run the same public-contrac
 `componenta/cycle` contains runtime database behavior. Filesystem scanning, attribute discovery, schema console commands, and compile integration belong to `componenta/cycle-app`.
 
 Application-specific typecast handlers are opt-in: set `ConfigKey::ROOT => [ConfigKey::TYPECAST_HANDLERS => [CustomTypecast::class]]` in the application configuration. The default chain includes UUID, Carbon, enum and Cycle's native typecast. Projects that previously relied on the implicit `App\\Cycle\\Typecast` handlers must register their own classes explicitly. Use role-local handler instances for handlers with mutable rules.
+
+### Dynamic field selection and sorting
+
+When request data controls field names, override `selectableColumns()` and `sortableColumns()` to return maps from permitted public names to trusted database column names. An explicit selection map also controls the default projection; a null map retains the legacy trusted-query behavior. Built-in column filters accept only simple or table-qualified identifiers; trusted SQL expressions belong in explicit query builder calls or custom filters. Row-level authorization and tenant scoping remain the caller's responsibility. Do not pass untrusted column names directly into a fetcher without an allowlist.
