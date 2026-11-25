@@ -89,7 +89,8 @@ abstract class DataFetcher
      */
     private function resolveTableName(): string
     {
-        $className = substr(strrchr(static::class, '\\'), 1);
+        $separator = strrpos(static::class, '\\');
+        $className = $separator === false ? static::class : substr(static::class, $separator + 1);
 
         // Remove 'Fetcher' suffix if present
         if (str_ends_with($className, 'Fetcher')) {
