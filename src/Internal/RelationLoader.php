@@ -6,6 +6,7 @@ namespace Componenta\Cycle\Internal;
 
 use Closure;
 use Cycle\Database\DatabaseInterface;
+use Cycle\Database\Driver\DriverInterface;
 use Cycle\Database\Injection\Fragment;
 use Cycle\Database\Injection\Parameter;
 use Cycle\Database\Query\QueryParameters;
@@ -88,8 +89,9 @@ final readonly class RelationLoader
             $ids,
             $binary,
             self::sqlitePlan($table, $columns, $foreignKey),
+            $transform,
         );
-        self::attachMany($results, $resultKey, $ordinals, $groups, $transform);
+        self::attachMany($results, $resultKey, $ordinals, $groups);
     }
 
     public function belongsToMany(
@@ -120,8 +122,8 @@ final readonly class RelationLoader
         $sqlite = self::simpleIdentifier($pivotTable) && self::simpleIdentifier($pivotLocalKey)
             ? self::sqlitePlan($relatedTable, $columns, $pivotLocalKey, 'p')
             : null;
-        $groups = $this->match($base, "p.$pivotLocalKey", $ids, $binary, $sqlite);
-        self::attachMany($results, $resultKey, $ordinals, $groups, $transform);
+        $groups = $this->match($base, "p.$pivotLocalKey", $ids, $binary, $sqlite, $transform);
+        self::attachMany($results, $resultKey, $ordinals, $groups);
     }
 
     /**
@@ -153,7 +155,7 @@ final readonly class RelationLoader
                 throw new InvalidArgumentException('A relation key must be a scalar or a seekable stream.');
             }
 
-            $identity = serialize($id);
+            $identity = is_int($id) ? $id : (is_string($id) ? 's:' . $id : serialize($id));
             if (!isset($seen[$identity])) {
                 $seen[$identity] = count($ids);
                 $ids[] = $id;
@@ -183,7 +185,14 @@ final readonly class RelationLoader
      * @param array{table: string, columns: list<string>, key: string}|null $sqlite
      * @return array<int, list<array>>
      */
-    private function match(SelectQuery $base, string $column, array $ids, bool $binary, ?array $sqlite): array
+    private function match(
+        SelectQuery $base,
+        string $column,
+        array $ids,
+        bool $binary,
+        ?array $sqlite,
+        ?Closure $transform = null,
+    ): array
     {
         $groups = [];
         if ($ids === []) {
@@ -192,47 +201,77 @@ final readonly class RelationLoader
         $driver = $base->getDriver() ?? throw new \LogicException('A relation query must have a database driver.');
         $compiler = $driver->getQueryCompiler();
         $prefix = $base->getPrefix() ?? '';
+        // SQLite's conservative limit also supports builds with the older
+        // 999-variable default; reserve room below SQL Server's 2100 limit.
+        $maxParameters = match ($driver->getType()) {
+            'SQLite' => 999,
+            'SQLServer' => 2000,
+            default => 65535,
+        };
         foreach (array_chunk($ids, self::BATCH_SIZE, true) as $chunk) {
             $bindings = array_map(
                 static fn (mixed $id): Parameter => new Parameter($id, $binary ? PDO::PARAM_LOB : Parameter::DETECT_TYPE),
                 $chunk,
             );
-            if ($sqlite !== null && $this->db->getType() === 'SQLite') {
+            if ($sqlite !== null && $driver->getType() === 'SQLite') {
                 $query = self::sqliteQuery($base, $sqlite, $bindings);
                 $parameters = new QueryParameters();
                 $sql = $compiler->compile($parameters, $prefix, $query);
-                $queryBindings = $parameters->getParameters();
-            } else {
-                // Each comparison is typed by its actual target column. A
-                // heterogeneous VALUES table would coerce or reject keys on
-                // PostgreSQL/SQL Server. UNION ALL also preserves duplicates.
-                // Compile standalone arms: SQLite rejects the parentheses
-                // that DBAL adds around nested SELECT fragments.
-                $arms = [];
-                $queryBindings = [];
-                foreach ($bindings as $ordinal => $parameter) {
-                    $arm = (clone $base)
-                        ->columns([new Fragment((string) $ordinal), ...$base->getColumns()])
-                        ->where($column, '=', $parameter);
-                    $parameters = new QueryParameters();
-                    $arms[] = $compiler->compile($parameters, $prefix, $arm);
-                    array_push($queryBindings, ...$parameters->getParameters());
-                }
-                $sql = implode("\nUNION ALL\n", $arms);
+                self::readGroups($driver, $sql, $parameters->getParameters(), $groups, $transform);
+                continue;
             }
 
-            // Execute with the exact bindings emitted by each compiled arm.
-            $statement = $driver->query($sql, $queryBindings);
-            try {
-                foreach ($statement->fetchAll(PDO::FETCH_GROUP | PDO::FETCH_ASSOC) as $ordinal => $matches) {
-                    $groups[$ordinal] = $matches;
+            // Each comparison is typed by its actual target column. A
+            // heterogeneous VALUES table would coerce or reject keys on
+            // PostgreSQL/SQL Server. Compile standalone arms: SQLite rejects
+            // the parentheses DBAL adds around nested SELECT fragments.
+            $arms = [];
+            $queryBindings = [];
+            foreach ($bindings as $ordinal => $parameter) {
+                $arm = (clone $base)
+                    ->columns([new Fragment((string) $ordinal), ...$base->getColumns()])
+                    ->where($column, '=', $parameter);
+                $parameters = new QueryParameters();
+                $sql = $compiler->compile($parameters, $prefix, $arm);
+                $armBindings = $parameters->getParameters();
+                // Trusted projections may themselves contain parameters;
+                // count the real compiled bindings, not only lookup keys.
+                if ($arms !== [] && count($queryBindings) + count($armBindings) > $maxParameters) {
+                    self::readGroups($driver, implode("\nUNION ALL\n", $arms), $queryBindings, $groups, $transform);
+                    $arms = [];
+                    $queryBindings = [];
                 }
-            } finally {
-                $statement->close();
+                $arms[] = $sql;
+                array_push($queryBindings, ...$armBindings);
             }
+            self::readGroups($driver, implode("\nUNION ALL\n", $arms), $queryBindings, $groups, $transform);
         }
 
         return $groups;
+    }
+
+
+    /**
+     * Close the statement before invoking application transforms. Transform
+     * and release each batch rather than accumulating all raw to-many rows.
+     */
+    private static function readGroups(
+        DriverInterface $driver,
+        string $sql,
+        array $bindings,
+        array &$groups,
+        ?Closure $transform,
+    ): void {
+        $statement = $driver->query($sql, $bindings);
+        try {
+            $matches = $statement->fetchAll(PDO::FETCH_GROUP | PDO::FETCH_ASSOC);
+        } finally {
+            $statement->close();
+        }
+
+        foreach ($matches as $ordinal => $rows) {
+            $groups[$ordinal] = $transform === null ? $rows : array_map($transform, $rows);
+        }
     }
 
     /**
@@ -293,14 +332,7 @@ final readonly class RelationLoader
         string $key,
         array $ordinals,
         array $groups,
-        ?Closure $transform,
     ): void {
-        if ($transform !== null) {
-            foreach ($groups as &$group) {
-                $group = array_map($transform, $group);
-            }
-            unset($group);
-        }
         foreach ($results as $index => &$result) {
             $ordinal = $ordinals[$index] ?? null;
             $result[$key] = $ordinal === null ? [] : ($groups[$ordinal] ?? []);

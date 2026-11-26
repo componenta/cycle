@@ -11,10 +11,12 @@ use Componenta\Cycle\DataFetcher;
 use Componenta\DI\ContainerFactory;
 use Cycle\Database\DatabaseInterface;
 use Cycle\Database\DatabaseManager;
+use Cycle\Database\Injection\Fragment;
 use Cycle\Database\Injection\Parameter;
 use Cycle\Database\Query\SelectQuery;
 
-it('matches relation keys using the configured database comparison and retains projection aliases', function (bool $numeric): void {
+function relationEqualityDatabase(): DatabaseInterface
+{
     $settings = ['DB_DRIVER' => 'sqlite', 'DB_NAME' => ':memory:'];
     foreach (['DRIVER', 'NAME', 'HOST', 'PORT', 'USER', 'PASSWORD', 'SCHEMA', 'TRUST_SERVER_CERTIFICATE'] as $key) {
         $value = getenv('CYCLE_TEST_DB_' . $key);
@@ -24,8 +26,12 @@ it('matches relation keys using the configured database comparison and retains p
     }
 
     $composition = (new ConfigFactory())->create(new Environment($settings), new ConfigProvider());
-    $db = (new ContainerFactory())->create($composition->config, $composition->dependencies)
+    return (new ContainerFactory())->create($composition->config, $composition->dependencies)
         ->get(DatabaseManager::class)->database();
+}
+
+it('matches relation keys using the configured database comparison and retains projection aliases', function (bool $numeric): void {
+    $db = relationEqualityDatabase();
 
     $type = $numeric ? 'INTEGER' : match ($db->getType()) {
         'MySQL' => 'VARCHAR(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci',
@@ -128,5 +134,81 @@ final class DatabaseEqualityFetcher extends DataFetcher
             columns: ['id'], transform: static fn (array $row): int => (int) $row['id']);
         $this->batchBelongsToMany($results, $rows, 'tags', 'cycle_test_eq_tags', 'cycle_test_eq_pivot',
             'root_id', 'tag_id', columns: ['id'], transform: static fn (array $row): int => (int) $row['id']);
+    }
+}
+
+it('bounds the real parameter count of grouped lookups with bound projection expressions', function (): void {
+    $db = relationEqualityDatabase();
+    try {
+        $db->execute('CREATE TABLE cycle_test_bound_roots (id INTEGER, owner_id INTEGER)');
+        $db->execute('CREATE TABLE cycle_test_bound_owners (id INTEGER)');
+        for ($offset = 0; $offset < 501; $offset += 100) {
+            $rootValues = [];
+            $ownerValues = [];
+            $rootParams = [];
+            $ownerParams = [];
+            for ($i = $offset; $i < min(501, $offset + 100); ++$i) {
+                $id = new Parameter($i + 1);
+                $rootValues[] = '(?, ?)';
+                $ownerValues[] = '(?)';
+                array_push($rootParams, $id, $id);
+                $ownerParams[] = $id;
+            }
+            $db->execute('INSERT INTO cycle_test_bound_roots VALUES ' . implode(', ', $rootValues), $rootParams);
+            $db->execute('INSERT INTO cycle_test_bound_owners VALUES ' . implode(', ', $ownerValues), $ownerParams);
+        }
+        $logger = new class extends \Psr\Log\AbstractLogger {
+            public int $reads = 0;
+
+            public function log($level, $message, array $context = []): void
+            {
+                if ($level === \Psr\Log\LogLevel::INFO && str_starts_with(ltrim((string) $message), 'SELECT')) {
+                    ++$this->reads;
+                }
+            }
+        };
+        $db->getDriver(DatabaseInterface::READ)->setLogger($logger);
+        $rows = (new BoundRelationProjectionFetcher($db))();
+        expect($rows)->toHaveCount(501);
+        foreach ($rows as $index => $row) {
+            expect((int) $row['id'])->toBe($index + 1);
+            expect($row['owner'])->toBe('matched');
+        }
+        $expectedQueries = match ($db->getType()) {
+            'SQLite' => 5,
+            'SQLServer' => 4,
+            default => 3,
+        };
+        expect($logger->reads)->toBe($expectedQueries);
+    } finally {
+        $db->execute('DROP TABLE IF EXISTS cycle_test_bound_owners');
+        $db->execute('DROP TABLE IF EXISTS cycle_test_bound_roots');
+    }
+});
+
+final class BoundRelationProjectionFetcher extends DataFetcher
+{
+    public function __invoke(): array
+    {
+        return $this->doFetch();
+    }
+
+    protected function getTableName(): string
+    {
+        return 'cycle_test_bound_roots';
+    }
+
+    protected function select(?object $query): SelectQuery
+    {
+        return parent::select($query)->orderBy('id');
+    }
+
+    protected function loadRelations(array &$results, array $rows, ?object $query): void
+    {
+        $this->batchBelongsTo(
+            $results, $rows, 'owner_id', 'cycle_test_bound_owners',
+            columns: [new Fragment('CASE WHEN ? = ? THEN ? ELSE ? END AS computed_value', 'same', 'same', 'matched', 'wrong')],
+            transform: static fn (array $row): string => $row['computed_value'],
+        );
     }
 }
