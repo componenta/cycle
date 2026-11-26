@@ -8,6 +8,8 @@ use Closure;
 use Cycle\Database\DatabaseInterface;
 use Cycle\Database\Injection\Fragment;
 use Cycle\Database\Injection\Parameter;
+use Cycle\Database\Query\QueryParameters;
+use Cycle\Database\Query\SelectQuery;
 use InvalidArgumentException;
 use PDO;
 
@@ -37,72 +39,24 @@ final readonly class RelationLoader
             return;
         }
 
-        if ($rows === []) {
-            foreach ($results as &$result) {
-                $result[$key] = null;
-            }
-            return;
-        }
+        [$ids, $ordinals, $binary, $references] = self::lookupKeys($rows, $foreignKey, $binaryKey);
+        $columns = self::includeKey($columns, $tableKey);
+        $groups = $this->match(
+            $this->db->select($columns)->from($table),
+            $tableKey,
+            $ids,
+            $binary,
+            self::sqlitePlan($table, $columns, $tableKey),
+        );
 
-        [$groups, , $hasRepeatedKeys] = $this->collectIds($rows, $foreignKey, $binaryKey);
-
-        if ($groups === []) {
-            foreach ($results as &$result) {
-                $result[$key] = null;
-            }
-            return;
-        }
-
-        // Ensure tableKey is in columns for indexing
-        $selectColumns = $columns;
-        if ($columns !== ['*'] && !in_array($tableKey, $selectColumns, true)) {
-            $selectColumns[] = $tableKey;
-        }
-
-        // Index by table key
-        $indexed = [];
-        foreach (self::chunks($groups) as $prefix => $chunk) {
-            $relatedRows = $this->db
-                ->select($selectColumns)
-                ->from($table)
-                ->where($tableKey, 'IN', new Parameter($chunk))
-                ->fetchAll();
-
-            foreach ($relatedRows as $row) {
-                $id = $row[$tableKey];
-                if (is_resource($id)) {
-                    $id = self::streamKey($id);
-                }
-                $indexed[$prefix === '' ? $id : $prefix . $id] = $row;
-            }
-        }
-
-        $typed = count($groups) > 1;
-        $streamRows = [];
-        if ($hasRepeatedKeys && $transform !== null) {
-            // Inspect each distinct related row once, not once per parent.
-            foreach ($indexed as $id => $row) {
-                foreach ($row as $value) {
-                    if (is_resource($value) && get_resource_type($value) === 'stream') {
-                        $streamRows[$id] = true;
-                        break;
-                    }
-                }
-            }
-        }
-
-        foreach ($results as $i => &$result) {
-            $fk = $rows[$i][$foreignKey] ?? null;
-            if (is_resource($fk)) {
-                $fk = self::streamKey($fk);
-            }
-            if ($typed && $fk !== null) {
-                $fk = self::keyPrefix($fk) . $fk;
-            }
-            $related = $fk !== null ? ($indexed[$fk] ?? null) : null;
+        foreach ($results as $index => &$result) {
+            $ordinal = $ordinals[$index] ?? null;
+            $matches = $ordinal === null ? [] : ($groups[$ordinal] ?? []);
+            // A belongs-to key identifies at most one row; preserve the
+            // historical last-row behavior if the target is not unique.
+            $related = $matches === [] ? null : $matches[array_key_last($matches)];
             if ($related !== null && $transform !== null) {
-                // Shared rows need independent streams for each callback.
-                if (isset($streamRows[$fk])) {
+                if ($references[$ordinal] > 1) {
                     $related = self::copyStreams($related);
                 }
                 $related = $transform($related);
@@ -126,57 +80,16 @@ final readonly class RelationLoader
             return;
         }
 
-        if ($rows === []) {
-            foreach ($results as &$result) {
-                $result[$resultKey] = [];
-            }
-            return;
-        }
-
-        [$groups] = $this->collectIds($rows, $localKey, $binaryKey);
-
-        if ($groups === []) {
-            foreach ($results as &$result) {
-                $result[$resultKey] = [];
-            }
-            return;
-        }
-
-        // Ensure foreign key is in columns for grouping
-        $selectColumns = $columns;
-        if ($columns !== ['*'] && !in_array($foreignKey, $selectColumns, true)) {
-            $selectColumns[] = $foreignKey;
-        }
-
-        // Group by foreign key
-        $grouped = [];
-        foreach (self::chunks($groups) as $prefix => $chunk) {
-            $relatedRows = $this->db
-                ->select($selectColumns)
-                ->from($table)
-                ->where($foreignKey, 'IN', new Parameter($chunk))
-                ->fetchAll();
-
-            foreach ($relatedRows as $row) {
-                $id = $row[$foreignKey];
-                if (is_resource($id)) {
-                    $id = self::streamKey($id);
-                }
-                $grouped[$prefix === '' ? $id : $prefix . $id][] = $transform !== null ? $transform($row) : $row;
-            }
-        }
-
-        $typed = count($groups) > 1;
-        foreach ($results as $i => &$result) {
-            $localId = $rows[$i][$localKey] ?? null;
-            if (is_resource($localId)) {
-                $localId = self::streamKey($localId);
-            }
-            if ($typed && $localId !== null) {
-                $localId = self::keyPrefix($localId) . $localId;
-            }
-            $result[$resultKey] = $localId !== null ? ($grouped[$localId] ?? []) : [];
-        }
+        [$ids, $ordinals, $binary] = self::lookupKeys($rows, $localKey, $binaryKey);
+        $columns = self::includeKey($columns, $foreignKey);
+        $groups = $this->match(
+            $this->db->select($columns)->from($table),
+            $foreignKey,
+            $ids,
+            $binary,
+            self::sqlitePlan($table, $columns, $foreignKey),
+        );
+        self::attachMany($results, $resultKey, $ordinals, $groups, $transform);
     }
 
     public function belongsToMany(
@@ -197,90 +110,36 @@ final readonly class RelationLoader
             return;
         }
 
-        if ($rows === []) {
-            foreach ($results as &$result) {
-                $result[$resultKey] = [];
-            }
-            return;
-        }
+        [$ids, $ordinals, $binary] = self::lookupKeys($rows, $localKey, $binaryKey);
+        $projection = $columns === ['*'] ? ['r.*'] : array_map(static fn(string $c) => "r.$c", $columns);
+        $base = $this->db->select($projection)
+            ->from("$relatedTable AS r")
+            ->innerJoin($pivotTable, 'p')
+            ->on("p.$pivotForeignKey", "r.$relatedKey");
 
-        [$groups, $binary] = $this->collectIds($rows, $localKey, $binaryKey);
-
-        if ($groups === []) {
-            foreach ($results as &$result) {
-                $result[$resultKey] = [];
-            }
-            return;
-        }
-
-        // PDO groups by the first result column and excludes that column
-        // from the related row. No reserved alias can collide with r.* or
-        // with an explicitly selected field.
-        $groupKey = "p.$pivotLocalKey";
-        $hexGroupKey = $binary && $this->db->getType() === 'Postgres';
-        if ($hexGroupKey) {
-            // PDO cannot group by a bytea stream's contents. Return the
-            // grouping column as hex text without touching related fields.
-            $quoted = $this->db->getDriver(DatabaseInterface::READ)->getQueryCompiler()->quoteIdentifier($groupKey);
-            $groupKey = new Fragment("encode($quoted, 'hex')");
-        }
-
-        $selectColumns = [
-            $groupKey,
-            ...($columns === ['*'] ? ['r.*'] : array_map(static fn(string $c) => "r.$c", $columns)),
-        ];
-
-        $grouped = [];
-        foreach (self::chunks($groups) as $prefix => $chunk) {
-            $relatedGroups = $this->db
-                ->select($selectColumns)
-                ->from("$relatedTable AS r")
-                ->innerJoin($pivotTable, 'p')
-                ->on("p.$pivotForeignKey", "r.$relatedKey")
-                ->where("p.$pivotLocalKey", 'IN', new Parameter($chunk))
-                ->fetchAll(\PDO::FETCH_GROUP | \PDO::FETCH_ASSOC);
-
-            foreach ($relatedGroups as $localId => $relatedRows) {
-                if ($prefix !== '') {
-                    $localId = $prefix . $localId;
-                }
-                if ($transform !== null) {
-                    $relatedRows = array_map($transform, $relatedRows);
-                }
-
-                if (isset($grouped[$localId])) {
-                    foreach ($relatedRows as $row) {
-                        $grouped[$localId][] = $row;
-                    }
-                } else {
-                    $grouped[$localId] = $relatedRows;
-                }
-            }
-        }
-
-        $typed = count($groups) > 1;
-        foreach ($results as $i => &$result) {
-            $localId = $rows[$i][$localKey] ?? null;
-            if (is_resource($localId)) {
-                $localId = self::streamKey($localId);
-            }
-            if ($typed && $localId !== null) {
-                $localId = self::keyPrefix($localId) . $localId;
-            }
-            if ($hexGroupKey && $localId !== null) {
-                $localId = bin2hex($localId);
-            }
-            $result[$resultKey] = $localId !== null ? ($grouped[$localId] ?? []) : [];
-        }
+        $sqlite = self::simpleIdentifier($pivotTable) && self::simpleIdentifier($pivotLocalKey)
+            ? self::sqlitePlan($relatedTable, $columns, $pivotLocalKey, 'p')
+            : null;
+        $groups = $this->match($base, "p.$pivotLocalKey", $ids, $binary, $sqlite);
+        self::attachMany($results, $resultKey, $ordinals, $groups, $transform);
     }
 
     /**
-     * @return array{0: array<string, list<string|Parameter>>, 1: bool, 2: bool}
+     * Resolve each distinct PHP input to a stable ordinal. Never infer SQL
+     * equality from a PHP array key (collations, affinity and type coercion
+     * differ). Preserve nulls, exact bytes and the type of every parameter.
+     *
+     * @return array{list<mixed>, array<array-key, int>, bool, array<int, int>}
      */
-    private function collectIds(array $rows, string $column, bool $binary): array
+    private static function lookupKeys(array $rows, string $column, bool $binary): array
     {
         $ids = [];
-        foreach (array_column($rows, $column) as $id) {
+        $ordinals = [];
+        $references = [];
+        $seen = [];
+
+        foreach ($rows as $index => $row) {
+            $id = $row[$column] ?? null;
             if ($id === null) {
                 continue;
             }
@@ -290,95 +149,154 @@ final readonly class RelationLoader
             } elseif (gettype($id) === 'resource (closed)') {
                 throw new InvalidArgumentException('A relation key stream was closed during row transformation.');
             }
-            $ids[] = $id;
-        }
-        if ($ids === []) {
-            return [[], $binary, false];
-        }
-
-        $count = count($ids);
-        $unique = array_values(array_unique($ids));
-        $hasRepeatedKeys = count($unique) !== $count;
-
-        // PHP array keys and array_unique collapse canonical numeric strings
-        // into integers. SQLite can store those as distinct keys in columns
-        // without affinity. Only split when that ambiguity actually occurs.
-        if (!$binary && $hasRepeatedKeys && $this->db->getType() === 'SQLite'
-            && self::hasAmbiguousKeys($ids)
-        ) {
-            $parts = [];
-            foreach ($ids as $id) {
-                $parts[self::keyPrefix($id)][] = $id;
+            if (!is_scalar($id)) {
+                throw new InvalidArgumentException('A relation key must be a scalar or a seekable stream.');
             }
-            $uniqueCount = 0;
-            foreach ($parts as &$part) {
-                $part = array_values(array_unique($part));
-                $uniqueCount += count($part);
-                $part = self::bindIds($part, false);
-            }
-            unset($part);
 
-            return [$parts, false, $uniqueCount !== $count];
+            $identity = serialize($id);
+            if (!isset($seen[$identity])) {
+                $seen[$identity] = count($ids);
+                $ids[] = $id;
+            }
+            $ordinal = $seen[$identity];
+            $ordinals[$index] = $ordinal;
+            $references[$ordinal] = ($references[$ordinal] ?? 0) + 1;
         }
 
-        return [['' => self::bindIds($unique, $binary)], $binary, $hasRepeatedKeys];
-    }
-
-    /** @return list<string|Parameter> */
-    private static function bindIds(array $ids, bool $binary): array
-    {
-        // DBAL flattens IN lists; raw values default to PDO::PARAM_STR.
         if ($binary) {
-            return array_map(static function (mixed $id): Parameter {
+            foreach ($ids as $id) {
                 if (!is_string($id)) {
                     throw new InvalidArgumentException('A binary relation key must be a string or a seekable stream.');
                 }
-                return new Parameter($id, PDO::PARAM_LOB);
-            }, $ids);
+            }
         }
 
-        return array_map(
-            static fn (mixed $id): string|Parameter => is_string($id) ? $id : new Parameter($id),
-            $ids,
-        );
+        return [$ids, $ordinals, $binary, $references];
     }
 
-    private static function hasAmbiguousKeys(array $ids): bool
+    /**
+     * Tag every matched row with the ordinal of its requested key, rather
+     * than indexing by the returned column value. PDO consumes the first
+     * column as the group key and never exposes it to projection callbacks.
+     *
+     * @param list<mixed> $ids
+     * @param array{table: string, columns: list<string>, key: string}|null $sqlite
+     * @return array<int, list<array>>
+     */
+    private function match(SelectQuery $base, string $column, array $ids, bool $binary, ?array $sqlite): array
     {
-        $firstIsInteger = is_int($ids[0]);
-        foreach ($ids as $id) {
-            if (is_int($id) !== $firstIsInteger) {
-                // Avoid allocating another map for homogeneous repeated keys.
-                $types = [];
-                foreach ($ids as $value) {
-                    if (!is_int($value) && !is_string($value)) {
-                        continue;
+        $groups = [];
+        foreach (array_chunk($ids, self::BATCH_SIZE, true) as $chunk) {
+            $bindings = array_map(
+                static fn (mixed $id): Parameter => new Parameter($id, $binary ? PDO::PARAM_LOB : Parameter::DETECT_TYPE),
+                $chunk,
+            );
+            if ($sqlite !== null && $this->db->getType() === 'SQLite') {
+                $query = self::sqliteQuery($base, $sqlite, $bindings);
+            } else {
+                // Each comparison is typed by its actual target column. A
+                // heterogeneous VALUES table would coerce or reject keys on
+                // PostgreSQL/SQL Server. UNION ALL also preserves duplicates.
+                $query = null;
+                foreach ($bindings as $ordinal => $parameter) {
+                    $arm = (clone $base)
+                        ->columns([new Fragment((string) $ordinal), ...$base->getColumns()])
+                        ->where($column, '=', $parameter);
+                    if ($query === null) {
+                        $query = $arm;
+                    } else {
+                        $query->unionAll($arm);
                     }
-                    $integer = is_int($value);
-                    if (isset($types[$value]) && $types[$value] !== $integer) {
-                        return true;
-                    }
-                    $types[$value] = $integer;
                 }
-                return false;
+            }
+
+            // Compile compound statements with their actual parameters; do
+            // not reconstruct the bindings from a cached query shape.
+            $driver = $query->getDriver();
+            $parameters = new QueryParameters();
+            $sql = $driver->getQueryCompiler()->compile($parameters, $query->getPrefix() ?? '', $query);
+            $statement = $driver->query($sql, $parameters->getParameters());
+            try {
+                foreach ($statement->fetchAll(PDO::FETCH_GROUP | PDO::FETCH_ASSOC) as $ordinal => $matches) {
+                    $groups[$ordinal] = $matches;
+                }
+            } finally {
+                $statement->close();
             }
         }
 
-        return false;
+        return $groups;
     }
 
-    private static function keyPrefix(mixed $key): string
+    /**
+     * SQLite VALUES retains the individual storage class of each bound key.
+     * Join once for ordinary projections instead of planning one SELECT per
+     * key. Complex trusted projections use the portable compound-query path.
+     *
+     * @return array{table: string, columns: list<string>, key: string}|null
+     */
+    private static function sqlitePlan(string $table, array $columns, string $column, string $alias = 'r'): ?array
     {
-        return is_int($key) ? 'i:' : 's:';
-    }
-
-    /** @return \Generator<string, list<string|Parameter>> */
-    private static function chunks(array $groups): \Generator
-    {
-        foreach ($groups as $prefix => $ids) {
-            foreach (array_chunk($ids, self::BATCH_SIZE) as $chunk) {
-                yield $prefix => $chunk;
+        if (!self::simpleIdentifier($table) || !self::simpleIdentifier($column) || !array_is_list($columns)) {
+            return null;
+        }
+        $qualified = [];
+        foreach ($columns as $field) {
+            if ($field === '*') {
+                $qualified[] = 'r.*';
+            } elseif (is_string($field) && self::simpleIdentifier($field)) {
+                $qualified[] = 'r.' . $field;
+            } else {
+                return null;
             }
+        }
+        return ['table' => "$table AS r", 'columns' => $qualified, 'key' => "\"$alias\".\"$column\""];
+    }
+
+    private static function simpleIdentifier(string $name): bool
+    {
+        return preg_match('/\A[A-Za-z_][A-Za-z0-9_]*\z/', $name) === 1;
+    }
+
+    /** @param array<int, Parameter> $bindings */
+    private static function sqliteQuery(SelectQuery $base, array $plan, array $bindings): SelectQuery
+    {
+        $values = [];
+        foreach ($bindings as $ordinal => $parameter) {
+            $values[] = '(?, ' . $ordinal . ')';
+        }
+        $keys = new Fragment('(VALUES ' . implode(', ', $values) . ') AS "_componenta_keys"', ...array_values($bindings));
+
+        return (clone $base)
+            ->from([$plan['table'], $keys])
+            ->columns([new Fragment('"_componenta_keys"."column2"'), ...$plan['columns']])
+            ->where(new Fragment($plan['key'] . ' = "_componenta_keys"."column1"'));
+    }
+
+    private static function includeKey(array $columns, string $key): array
+    {
+        if ($columns !== ['*'] && !in_array($key, $columns, true)) {
+            $columns[] = $key;
+        }
+        return $columns;
+    }
+
+    private static function attachMany(
+        array &$results,
+        string $key,
+        array $ordinals,
+        array $groups,
+        ?Closure $transform,
+    ): void {
+        if ($transform !== null) {
+            foreach ($groups as &$group) {
+                $group = array_map($transform, $group);
+            }
+            unset($group);
+        }
+        foreach ($results as $index => &$result) {
+            $ordinal = $ordinals[$index] ?? null;
+            $result[$key] = $ordinal === null ? [] : ($groups[$ordinal] ?? []);
         }
     }
 
