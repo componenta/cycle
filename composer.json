@@ -36,13 +36,14 @@
         }
     },
     "require-dev": {
-        "pestphp/pest": "^4.0"
+        "pestphp/pest": "^4.0",
+        "phpbench/phpbench": "^1.7"
     },
     "scripts": {
         "test": "@php vendor/bin/pest",
         "bench": [
-            "@php benchmarks/data-fetcher.php",
-            "@php benchmarks/orm-hydration.php"
+            "Composer\\Config::disableProcessTimeout",
+            "@php vendor/bin/phpbench run --config=phpbench.json.dist --report=aggregate --report=env"
         ]
     },
     "config": {

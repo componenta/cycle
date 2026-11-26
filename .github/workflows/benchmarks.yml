@@ -1,0 +1,46 @@
+name: Benchmarks
+
+on:
+  workflow_dispatch:
+    inputs:
+      baseline:
+        description: Compatible source revision for comparison
+        required: false
+        default: '9f750218e39861e61f419089c3f7e3b730de9e11'
+  push:
+    paths:
+      - 'benchmarks/**'
+      - 'phpbench.json.dist'
+      - '.github/workflows/benchmarks.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    env:
+      BENCH_BASELINE: ${{ inputs.baseline || '9f750218e39861e61f419089c3f7e3b730de9e11' }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.5'
+          extensions: pdo_sqlite, mbstring, ctype
+          coverage: none
+          tools: composer:v2
+      - run: composer install --no-interaction --prefer-dist
+      - name: Compare on the same dependency set
+        shell: bash
+        run: |
+          set -euo pipefail
+          baseline=$(mktemp -d)
+          trap 'rm -rf "$baseline"' EXIT
+          ref=$(git rev-parse --verify --end-of-options "$BENCH_BASELINE^{commit}")
+          git archive "$ref" src | tar -x -C "$baseline"
+          echo "Baseline $ref"
+          CYCLE_BENCH_SOURCE_ROOT="$baseline/src" composer bench
+          echo "Current $GITHUB_SHA"
+          composer bench

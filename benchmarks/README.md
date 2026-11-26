@@ -1,22 +1,24 @@
 # Cycle benchmarks
 
-Run from the repository root after `composer install`:
+Run from the repository root after installing development dependencies:
 
 ```sh
 composer bench
 ```
 
-The scripts use deterministic data, verify observable results before measurement, and report the median, minimum and maximum time per operation over nine samples. The DataFetcher cases cover plain and custom row transformations, pagination with and without totals, and all three batched relation types against in-memory SQLite. The ORM cases use actual Cycle relation maps, native lazy-ghost hydration and extraction, with no database I/O in the measured operations.
+The suite uses PHPBench with nine iterations, explicit revolutions and warmup for repeated paths. Setup and behavioral preflight are outside the measured operations. The data fetcher subjects cover default/custom transformations, fresh fetcher instances, ordinary/deep-offset pages with and without total counts, and all three batched relation types with indexed SQLite tables. ORM subjects cover extraction with and without relations, and hydration/extraction with fresh and reused entity factories. A cold subject starts with a fresh object instance or factory; it does not imply a cold operating-system or database cache.
 
-For a source-only comparison with the pre-decomposition implementation, keep the same checkout, installed dependencies, PHP configuration and machine:
+Compare two source revisions on the same machine, using the same current benchmark suite and installed dependencies:
 
 ```sh
-git show 3f73aaf3af7fb492c7ef866bc958176de57e0abf:src/DataFetcher.php > /tmp/cycle-fetcher-before.php
-CYCLE_BENCH_FETCHER_SOURCE=/tmp/cycle-fetcher-before.php php benchmarks/data-fetcher.php
-php benchmarks/data-fetcher.php
+baseline=$(mktemp -d)
+git archive 9f750218e39861e61f419089c3f7e3b730de9e11 src | tar -x -C "$baseline"
+CYCLE_BENCH_SOURCE_ROOT="$baseline/src" composer bench
+composer bench
+rm -rf "$baseline"
 ```
 
-Compare medians rather than individual iterations. These timings are workload-specific, not universal performance guarantees.
+The `CYCLE_BENCH_SOURCE_ROOT` override loads every Componenta Cycle class from the selected source tree; it must be compatible with the current benchmark's public contracts. Do not compare absolute times from different runners. The following historical measurements used the former standalone nine-sample harness and are not directly comparable with PHPBench output.
 
 ## Refactoring measurement (25 November 2026)
 
@@ -30,11 +32,11 @@ The same runner, PHP 8.5.13 and installed dependency set were used for the basel
 | Page with total, 100 rows | 0.1390 | 0.1415 |
 | Three relation types, 1,000 rows | 4.3112 | 4.2285 |
 
-These are individual controlled-run measurements, not statistical proof of a universal speedup. Normal test CI does not run benchmarks or depend on the historical baseline; benchmarking is opt-in through `composer bench`.
+These are individual controlled-run measurements, not statistical proof of a universal speedup. Those measurements are historical.
 
 ### Comparing the entire package source
 
-Use the same dependencies and benchmark scripts for both revisions. The source-root option overrides all `Componenta\\Cycle` classes, not just the fetcher. For example, to compare with the state immediately before the performance review:
+Use the same dependencies and benchmark scripts for both revisions. The source-root option overrides the entire package source. The following was the historical comparison baseline.
 
 ```sh
 baseline=$(mktemp -d)
