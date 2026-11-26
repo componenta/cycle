@@ -166,3 +166,30 @@ jobs:
           CYCLE_TEST_DB_USER: sa
           CYCLE_TEST_DB_PASSWORD: CycleTest-2026!
           CYCLE_TEST_DB_TRUST_SERVER_CERTIFICATE: 'true'
+
+  publish:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && startsWith(github.event.head_commit.message, 'Release v')
+    needs: [sqlite, lowest-dependencies, mysql, postgres, sqlserver]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - name: Publish GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+        run: |
+          set -euo pipefail
+          first_line="${COMMIT_MESSAGE%%$'\n'*}"
+          tag="${first_line#Release }"
+          if ! [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid release tag: $tag" >&2
+            exit 1
+          fi
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag already exists."
+            exit 0
+          fi
+          gh release create "$tag" --target "$GITHUB_SHA" --title "$tag" --generate-notes
