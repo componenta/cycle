@@ -120,7 +120,7 @@ final readonly class RelationLoader
             ->on("p.$pivotForeignKey", "r.$relatedKey");
 
         $sqlite = self::simpleIdentifier($pivotTable) && self::simpleIdentifier($pivotLocalKey)
-            ? self::joinPlan($relatedTable, $columns, $pivotLocalKey, 'p', $pivotTable)
+            ? self::joinPlan($relatedTable, $columns, $pivotLocalKey, 'p', $pivotTable, $pivotForeignKey, $relatedKey)
             : null;
         $groups = $this->match($base, "p.$pivotLocalKey", $ids, $binary, $sqlite, $transform);
         self::attachMany($results, $resultKey, $ordinals, $groups);
@@ -182,7 +182,7 @@ final readonly class RelationLoader
      * column as the group key and never exposes it to projection callbacks.
      *
      * @param list<mixed> $ids
-     * @param array{table: string, columns: list<string>, key: string, keyTable: string, keyColumn: string, alias: string}|null $sqlite
+     * @param array{table: string, columns: list<string>, key: string, keyTable: string, keyColumn: string, alias: string, tableName: string, pivotForeignKey: ?string, relatedKey: ?string}|null $sqlite
      * @return array<int, list<array>>
      */
     private function match(
@@ -225,7 +225,7 @@ final readonly class RelationLoader
                 $chunk,
             );
             if ($sqlite !== null && $driver->getType() === 'SQLite') {
-                $query = self::sqliteQuery($base, $sqlite, $bindings);
+                $query = $this->sqliteQuery($sqlite, $bindings);
                 $parameters = new QueryParameters();
                 $sql = $compiler->compile($parameters, $prefix, $query);
                 self::readGroups($driver, $sql, $parameters->getParameters(), $groups, $transform);
@@ -334,8 +334,18 @@ final readonly class RelationLoader
      *
      * @return array{table: string, columns: list<string>, key: string}|null
      */
-    private static function joinPlan(string $table, array $columns, string $column, string $alias = 'r', ?string $keyTable = null): ?array
-    {
+    private static function joinPlan(
+        string $table,
+        array $columns,
+        string $column,
+        string $alias = 'r',
+        ?string $keyTable = null,
+        ?string $pivotForeignKey = null,
+        ?string $relatedKey = null,
+    ): ?array {
+        if ($keyTable !== null && (!self::simpleIdentifier($pivotForeignKey ?? '') || !self::simpleIdentifier($relatedKey ?? ''))) {
+            return null;
+        }
         if (!self::simpleIdentifier($table) || !self::simpleIdentifier($column) || !array_is_list($columns)) {
             return null;
         }
@@ -356,6 +366,9 @@ final readonly class RelationLoader
             'keyTable' => $keyTable ?? $table,
             'keyColumn' => $column,
             'alias' => $alias,
+            'tableName' => $table,
+            'pivotForeignKey' => $pivotForeignKey,
+            'relatedKey' => $relatedKey,
         ];
     }
 
@@ -365,7 +378,7 @@ final readonly class RelationLoader
     }
 
     /** @param array<int, Parameter> $bindings */
-    private static function sqliteQuery(SelectQuery $base, array $plan, array $bindings): SelectQuery
+    private function sqliteQuery(array $plan, array $bindings): SelectQuery
     {
         $values = [];
         foreach ($bindings as $ordinal => $parameter) {
@@ -373,10 +386,20 @@ final readonly class RelationLoader
         }
         $keys = new Fragment('(VALUES ' . implode(', ', $values) . ') AS "_componenta_keys"', ...array_values($bindings));
 
-        return (clone $base)
-            ->from([$plan['table'], $keys])
-            ->columns([new Fragment('"_componenta_keys"."column2"'), ...$plan['columns']])
-            ->where(new Fragment($plan['key'] . ' = "_componenta_keys"."column1"'));
+        // SQLite may otherwise scan an entire BLOB-key table before probing
+        // a tiny VALUES relation. CROSS JOIN fixes the outer loop to the
+        // requested keys; the lookup column's index remains usable.
+        $query = $this->db->select([new Fragment('"_componenta_keys"."column2"'), ...$plan['columns']])
+            ->from($keys);
+        if ($plan['alias'] === 'p') {
+            $query->join('CROSS', $plan['keyTable'], 'p')
+                ->innerJoin($plan['tableName'], 'r')
+                ->on('p.' . $plan['pivotForeignKey'], 'r.' . $plan['relatedKey']);
+        } else {
+            $query->join('CROSS', $plan['tableName'], 'r');
+        }
+
+        return $query->where(new Fragment($plan['key'] . ' = "_componenta_keys"."column1"'));
     }
 
     /**
@@ -384,7 +407,7 @@ final readonly class RelationLoader
      * from the PHP representation. The empty scalar subquery supplies its
      * SQL type without reading any target rows.
      *
-     * @param array{table: string, columns: list<string>, key: string, keyTable: string, keyColumn: string, alias: string} $plan
+     * @param array{table: string, columns: list<string>, key: string, keyTable: string, keyColumn: string, alias: string, tableName: string, pivotForeignKey: ?string, relatedKey: ?string} $plan
      */
     private function typedSeed(array $plan, DriverInterface $driver, string $prefix, bool $ordinal = false): string
     {
