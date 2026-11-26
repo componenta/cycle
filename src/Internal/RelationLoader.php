@@ -201,6 +201,7 @@ final readonly class RelationLoader
         $driver = $base->getDriver() ?? throw new \LogicException('A relation query must have a database driver.');
         $compiler = $driver->getQueryCompiler();
         $prefix = $base->getPrefix() ?? '';
+        $projection = self::groupProjection($base, $driver);
         // SQLite's conservative limit also supports builds with the older
         // 999-variable default; reserve room below SQL Server's 2100 limit.
         $maxParameters = match ($driver->getType()) {
@@ -229,7 +230,7 @@ final readonly class RelationLoader
             $queryBindings = [];
             foreach ($bindings as $ordinal => $parameter) {
                 $arm = (clone $base)
-                    ->columns([new Fragment((string) $ordinal), ...$base->getColumns()])
+                    ->columns([new Fragment((string) $ordinal), ...$projection])
                     ->where($column, '=', $parameter);
                 $parameters = new QueryParameters();
                 $sql = $compiler->compile($parameters, $prefix, $arm);
@@ -250,6 +251,34 @@ final readonly class RelationLoader
         return $groups;
     }
 
+
+    /**
+     * MySQL does not accept an unqualified star after a preceding SELECT
+     * expression. Qualify the existing source rather than introducing an
+     * alias that would invalidate a caller's qualified column names.
+     */
+    private static function groupProjection(SelectQuery $base, DriverInterface $driver): array
+    {
+        $columns = $base->getColumns();
+        if ($driver->getType() !== 'MySQL' || !in_array('*', $columns, true)) {
+            return $columns;
+        }
+
+        // Relation bases have exactly one named FROM source. A schema-
+        // qualified name uses its final component as the table qualifier.
+        $source = $base->getTables()[0];
+        $parts = preg_split('/ AS /i', $source, 2);
+        $qualifier = $parts[1] ?? null;
+        if ($qualifier === null) {
+            $separator = strrpos($source, '.');
+            $qualifier = $separator === false
+                ? ($base->getPrefix() ?? '') . $source
+                : substr($source, $separator + 1);
+        }
+        $star = new Fragment($driver->getQueryCompiler()->quoteIdentifier($qualifier) . '.*');
+
+        return array_map(static fn (mixed $column): mixed => $column === '*' ? $star : $column, $columns);
+    }
 
     /**
      * Close the statement before invoking application transforms. Transform
