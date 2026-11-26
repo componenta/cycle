@@ -182,7 +182,7 @@ final readonly class RelationLoader
      * column as the group key and never exposes it to projection callbacks.
      *
      * @param list<mixed> $ids
-     * @param array{table: string, columns: list<string>, key: string, keyTable: string, keyColumn: string}|null $sqlite
+     * @param array{table: string, columns: list<string>, key: string, keyTable: string, keyColumn: string, alias: string}|null $sqlite
      * @return array<int, list<array>>
      */
     private function match(
@@ -203,7 +203,14 @@ final readonly class RelationLoader
         $prefix = $base->getPrefix() ?? '';
         $projection = self::groupProjection($base, $driver);
         $postgresSeed = $sqlite !== null && $driver->getType() === 'Postgres'
-            ? $this->postgresSeed($sqlite, $driver, $prefix)
+            ? $this->typedSeed($sqlite, $driver, $prefix)
+            : null;
+        $sqlServerSeed = $sqlite !== null && $driver->getType() === 'SQLServer' && count($ids) >= 16
+            && self::uniformKeys($ids)
+            ? $this->typedSeed($sqlite, $driver, $prefix, true)
+            : null;
+        $mysqlCast = $sqlite !== null && $driver->getType() === 'MySQL' && count($ids) >= 16
+            ? $this->mysqlCast($sqlite, $driver, $prefix, $ids, $binary)
             : null;
         // SQLite's conservative limit also supports builds with the older
         // 999-variable default; reserve room below SQL Server's 2100 limit.
@@ -226,6 +233,14 @@ final readonly class RelationLoader
             }
             if ($postgresSeed !== null) {
                 $query = self::postgresQuery($base, $sqlite, $bindings, $postgresSeed);
+                $parameters = new QueryParameters();
+                $sql = $compiler->compile($parameters, $prefix, $query);
+                self::readGroups($driver, $sql, $parameters->getParameters(), $groups, $transform);
+                continue;
+            }
+
+            if ($sqlServerSeed !== null || $mysqlCast !== null) {
+                $query = self::serverKeyQuery($base, $sqlite, $bindings, $driver, $sqlServerSeed, $mysqlCast);
                 $parameters = new QueryParameters();
                 $sql = $compiler->compile($parameters, $prefix, $query);
                 self::readGroups($driver, $sql, $parameters->getParameters(), $groups, $transform);
@@ -340,6 +355,7 @@ final readonly class RelationLoader
             'key' => "\"$alias\".\"$column\"",
             'keyTable' => $keyTable ?? $table,
             'keyColumn' => $column,
+            'alias' => $alias,
         ];
     }
 
@@ -368,11 +384,14 @@ final readonly class RelationLoader
      * from the PHP representation. The empty scalar subquery supplies its
      * SQL type without reading any target rows.
      *
-     * @param array{table: string, columns: list<string>, key: string, keyTable: string, keyColumn: string} $plan
+     * @param array{table: string, columns: list<string>, key: string, keyTable: string, keyColumn: string, alias: string} $plan
      */
-    private function postgresSeed(array $plan, DriverInterface $driver, string $prefix): string
+    private function typedSeed(array $plan, DriverInterface $driver, string $prefix, bool $ordinal = false): string
     {
-        $seed = $this->db->select([$plan['keyColumn']])
+        $columns = $ordinal
+            ? [$plan['keyColumn'] . ' AS componenta_value', new Fragment('-1 AS componenta_ordinal')]
+            : [$plan['keyColumn']];
+        $seed = $this->db->select($columns)
             ->from($plan['keyTable'])
             ->where(new Fragment('1 = 0'));
         return $driver->getQueryCompiler()->compile(new QueryParameters(), $prefix, $seed);
@@ -396,6 +415,119 @@ final readonly class RelationLoader
             ->columns([new Fragment('"_componenta_keys"."ordinal" - 2 + ' . $first), ...$plan['columns']])
             ->where(new Fragment($plan['key'] . ' = "_componenta_keys"."value"'))
             ->where(new Fragment('"_componenta_keys"."ordinal" > 1'));
+    }
+
+    /** @param list<mixed> $ids */
+    private static function uniformKeys(array $ids): bool
+    {
+        $type = gettype($ids[0]);
+        if ($type !== 'integer' && $type !== 'string') {
+            return false;
+        }
+        foreach ($ids as $id) {
+            if (gettype($id) !== $type) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * MySQL chooses a common type for derived columns. Do not let a
+     * VARCHAR-derived key turn exact integer comparisons into floating
+     * point comparisons, or let the connection collation replace the
+     * target collation. Inspect only the actual target column, never
+     * infer its type from PHP's representation of the root key.
+     *
+     * The probe is scoped to this execution (no stale schema cache).
+     * Complex/unknown types and mixed representations retain direct
+     * per-key comparisons. Explicit binary keys need no metadata probe.
+     */
+    private function mysqlCast(array $plan, DriverInterface $driver, string $prefix, array $ids, bool $binary): ?string
+    {
+        if ($binary) {
+            return 'CAST(? AS BINARY)';
+        }
+        if (!self::uniformKeys($ids)) {
+            return null;
+        }
+        $statement = $driver->query(
+            'SELECT DATA_TYPE AS data_type, CHARACTER_SET_NAME AS character_set_name, COLLATION_NAME AS collation_name'
+                . ' FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE()'
+                . ' AND TABLE_NAME = ? AND COLUMN_NAME = ?',
+            [new Parameter($prefix . $plan['keyTable']), new Parameter($plan['keyColumn'])],
+        );
+        try {
+            $column = $statement->fetch();
+        } finally {
+            $statement->close();
+        }
+        if ($column === false) {
+            return null;
+        }
+
+        $type = strtolower($column['data_type']);
+        if (in_array($type, ['tinyint', 'smallint', 'mediumint', 'int', 'bigint'], true)) {
+            foreach ($ids as $id) {
+                if (!is_int($id) && (!is_string($id) || (string) (int) $id !== $id)) {
+                    return null;
+                }
+            }
+            return 'CAST(? AS SIGNED)';
+        }
+        if (!is_string($ids[0])) {
+            return null;
+        }
+        if (in_array($type, ['binary', 'varbinary', 'tinyblob', 'blob', 'mediumblob', 'longblob'], true)) {
+            return 'CAST(? AS BINARY)';
+        }
+        if (!in_array($type, ['char', 'varchar', 'tinytext', 'text', 'mediumtext', 'longtext'], true)) {
+            return null;
+        }
+        $charset = $column['character_set_name'];
+        $collation = $column['collation_name'];
+        if (!is_string($charset) || !is_string($collation)
+            || !self::simpleIdentifier($charset) || !self::simpleIdentifier($collation)) {
+            return null;
+        }
+        return 'CAST(? AS CHAR CHARACTER SET ' . $charset . ') COLLATE ' . $collation;
+    }
+
+    /**
+     * Join a relation of bound keys and ordinals rather than duplicating
+     * the target query in each arm. SQL Server's empty typed seed supplies
+     * column type and collation; the MySQL planner uses explicit casts.
+     *
+     * @param array<int, Parameter> $bindings
+     */
+    private static function serverKeyQuery(
+        SelectQuery $base,
+        array $plan,
+        array $bindings,
+        DriverInterface $driver,
+        ?string $seed,
+        ?string $cast,
+    ): SelectQuery {
+        $arms = [];
+        if ($seed !== null) {
+            $arms[] = $seed;
+        }
+        foreach ($bindings as $ordinal => $parameter) {
+            $arms[] = 'SELECT ' . ($cast ?? '?') . ' AS componenta_value, '
+                . $ordinal . ' AS componenta_ordinal';
+        }
+        $compiler = $driver->getQueryCompiler();
+        $alias = $compiler->quoteIdentifier('_componenta_keys');
+        $value = $alias . '.' . $compiler->quoteIdentifier('componenta_value');
+        $ordinal = $alias . '.' . $compiler->quoteIdentifier('componenta_ordinal');
+        $key = $compiler->quoteIdentifier($plan['alias'] . '.' . $plan['keyColumn']);
+        $keys = new Fragment('(' . implode("\nUNION ALL\n", $arms) . ') AS ' . $alias, ...array_values($bindings));
+
+        return (clone $base)
+            ->from([$keys, $plan['table']])
+            ->columns([new Fragment($ordinal), ...$plan['columns']])
+            ->where(new Fragment($key . ' = ' . $value))
+            ->where(new Fragment($ordinal . ' >= 0'));
     }
 
     private static function includeKey(array $columns, string $key): array
