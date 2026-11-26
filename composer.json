@@ -6,8 +6,8 @@
     "require": {
         "php": "^8.4",
         "componenta/caster": "^1.0",
-        "componenta/config": "^3.0.0",
-        "componenta/di": "^5.0.3",
+        "componenta/config": "^3.0.0 || ^4.0",
+        "componenta/di": "^5.0.3 || ^6.0",
         "componenta/identity": "^1.0",
         "componenta/paginator": "^1.0",
         "cycle/annotated": "^4.4",

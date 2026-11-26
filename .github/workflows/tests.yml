@@ -167,9 +167,58 @@ jobs:
           CYCLE_TEST_DB_PASSWORD: CycleTest-2026!
           CYCLE_TEST_DB_TRUST_SERVER_CERTIFICATE: 'true'
 
+  next-dependencies:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.5'
+          extensions: pdo_sqlite, mbstring, ctype
+          coverage: none
+          tools: composer:v2
+      # Test the exact coordinated dependency sources before their releases.
+      # These path repositories and aliases exist only in this CI workspace.
+      - uses: actions/checkout@v7
+        with:
+          repository: componenta/di
+          ref: e203077d12048936f078d37d1cf3badd661e1716
+          path: .ci/di
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          repository: componenta/identity
+          ref: 3feb94e0d64956ecdf7b22abed4a8bd9f597abeb
+          path: .ci/identity
+          persist-credentials: false
+      - name: Resolve the next dependency combination
+        shell: bash
+        run: |
+          set -euo pipefail
+          php <<'PHP'
+          <?php
+          $path = 'composer.json';
+          $manifest = json_decode(file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+          $manifest['repositories'] = [
+              ['type' => 'path', 'url' => '.ci/di', 'options' => [
+                  'versions' => ['componenta/di' => '6.0.0'], 'symlink' => false,
+              ]],
+              ['type' => 'path', 'url' => '.ci/identity', 'options' => [
+                  'versions' => ['componenta/identity' => '1.1.1'], 'symlink' => false,
+              ]],
+          ];
+          $manifest['require']['componenta/config'] = '^4.0';
+          $manifest['require']['componenta/di'] = '^6.0';
+          $manifest['require']['componenta/identity'] = '^1.1.1';
+          file_put_contents($path, json_encode($manifest, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR) . PHP_EOL);
+          PHP
+          composer update --no-interaction --prefer-dist
+          composer show --direct
+      - run: composer test
+
   publish:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && startsWith(github.event.head_commit.message, 'Release v')
-    needs: [sqlite, lowest-dependencies, mysql, postgres, sqlserver]
+    needs: [sqlite, lowest-dependencies, mysql, postgres, sqlserver, next-dependencies]
     runs-on: ubuntu-latest
     permissions:
       contents: write
