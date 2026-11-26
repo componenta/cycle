@@ -9,6 +9,8 @@ on:
         default: '9f750218e39861e61f419089c3f7e3b730de9e11'
   push:
     paths:
+      - 'src/**'
+      - 'composer.json'
       - 'benchmarks/**'
       - 'phpbench.json.dist'
       - '.github/workflows/benchmarks.yml'
@@ -46,3 +48,179 @@ jobs:
           echo "Current $GITHUB_SHA"
           composer bench 2>&1 | tee "$RUNNER_TEMP/cycle-bench-current.log"
           grep -Eq 'Subjects: [1-9][0-9]*,' "$RUNNER_TEMP/cycle-bench-current.log"
+
+  mysql:
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: test-password
+          MYSQL_ROOT_HOST: '%'
+          MYSQL_DATABASE: cycle_tests
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h localhost"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+    env:
+      BENCH_BASELINE: ${{ inputs.baseline || '9f750218e39861e61f419089c3f7e3b730de9e11' }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.5'
+          extensions: pdo_sqlite, pdo_mysql, mbstring, ctype
+          coverage: none
+          tools: composer:v2
+      - run: composer install --no-interaction --prefer-dist
+      - name: Compare on the same dependency set
+        shell: bash
+        run: |
+          set -euo pipefail
+          baseline=$(mktemp -d)
+          trap 'rm -rf "$baseline"' EXIT
+          ref=$(git rev-parse --verify --end-of-options "$BENCH_BASELINE^{commit}")
+          git archive "$ref" src | tar -x -C "$baseline"
+          echo "Baseline $ref"
+          CYCLE_BENCH_SOURCE_ROOT="$baseline/src" composer bench -- --filter=RelationDatabaseBench 2>&1 | tee "$RUNNER_TEMP/cycle-bench-baseline.log"
+          grep -Eq 'Subjects: [1-9][0-9]*,' "$RUNNER_TEMP/cycle-bench-baseline.log"
+          echo "Current $GITHUB_SHA"
+          composer bench -- --filter=RelationDatabaseBench 2>&1 | tee "$RUNNER_TEMP/cycle-bench-current.log"
+          grep -Eq 'Subjects: [1-9][0-9]*,' "$RUNNER_TEMP/cycle-bench-current.log"
+        env:
+          CYCLE_TEST_DB_DRIVER: mysql
+          CYCLE_TEST_DB_NAME: cycle_tests
+          CYCLE_TEST_DB_HOST: 127.0.0.1
+          CYCLE_TEST_DB_PORT: '3306'
+          CYCLE_TEST_DB_USER: root
+          CYCLE_TEST_DB_PASSWORD: test-password
+
+  postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: cycle
+          POSTGRES_PASSWORD: test-password
+          POSTGRES_DB: cycle_tests
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U cycle -d cycle_tests"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+    env:
+      BENCH_BASELINE: ${{ inputs.baseline || '9f750218e39861e61f419089c3f7e3b730de9e11' }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.5'
+          extensions: pdo_sqlite, pdo_pgsql, mbstring, ctype
+          coverage: none
+          tools: composer:v2
+      - run: composer install --no-interaction --prefer-dist
+      - name: Compare on the same dependency set
+        shell: bash
+        run: |
+          set -euo pipefail
+          baseline=$(mktemp -d)
+          trap 'rm -rf "$baseline"' EXIT
+          ref=$(git rev-parse --verify --end-of-options "$BENCH_BASELINE^{commit}")
+          git archive "$ref" src | tar -x -C "$baseline"
+          echo "Baseline $ref"
+          CYCLE_BENCH_SOURCE_ROOT="$baseline/src" composer bench -- --filter=RelationDatabaseBench 2>&1 | tee "$RUNNER_TEMP/cycle-bench-baseline.log"
+          grep -Eq 'Subjects: [1-9][0-9]*,' "$RUNNER_TEMP/cycle-bench-baseline.log"
+          echo "Current $GITHUB_SHA"
+          composer bench -- --filter=RelationDatabaseBench 2>&1 | tee "$RUNNER_TEMP/cycle-bench-current.log"
+          grep -Eq 'Subjects: [1-9][0-9]*,' "$RUNNER_TEMP/cycle-bench-current.log"
+        env:
+          CYCLE_TEST_DB_DRIVER: postgres
+          CYCLE_TEST_DB_NAME: cycle_tests
+          CYCLE_TEST_DB_HOST: 127.0.0.1
+          CYCLE_TEST_DB_PORT: '5432'
+          CYCLE_TEST_DB_USER: cycle
+          CYCLE_TEST_DB_PASSWORD: test-password
+          CYCLE_TEST_DB_SCHEMA: public
+
+  sqlserver:
+    runs-on: ubuntu-24.04
+    services:
+      sqlserver:
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        env:
+          ACCEPT_EULA: 'Y'
+          MSSQL_PID: Developer
+          MSSQL_SA_PASSWORD: CycleTest-2026!
+        ports:
+          - 1433:1433
+    env:
+      BENCH_BASELINE: ${{ inputs.baseline || '9f750218e39861e61f419089c3f7e3b730de9e11' }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          extensions: pdo_sqlite, pdo_sqlsrv, mbstring, ctype
+          coverage: none
+          tools: composer:v2
+      - run: composer install --no-interaction --prefer-dist
+      - name: Install Microsoft ODBC Driver 18
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! dpkg-query -W -f='${Status}' msodbcsql18 2>/dev/null | grep -q 'install ok installed'; then
+            if ! dpkg-query -W -f='${Status}' packages-microsoft-prod 2>/dev/null | grep -q 'install ok installed'; then
+              curl --fail --silent --show-error --location https://packages.microsoft.com/config/ubuntu/24.04/packages-microsoft-prod.deb -o "$RUNNER_TEMP/packages-microsoft-prod.deb"
+              sudo dpkg -i "$RUNNER_TEMP/packages-microsoft-prod.deb"
+            fi
+            sudo apt-get update
+            sudo ACCEPT_EULA=Y apt-get install -y msodbcsql18
+          fi
+          odbcinst -q -d
+      - name: Wait for SQL Server
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in {1..30}; do
+            if php -r 'new PDO("sqlsrv:Server=127.0.0.1,1433;Database=master;TrustServerCertificate=1;LoginTimeout=3", "sa", getenv("CYCLE_TEST_DB_PASSWORD"));'; then
+              exit 0
+            fi
+            sleep 2
+          done
+          exit 1
+        env:
+          CYCLE_TEST_DB_PASSWORD: CycleTest-2026!
+      - name: Compare on the same dependency set
+        shell: bash
+        run: |
+          set -euo pipefail
+          baseline=$(mktemp -d)
+          trap 'rm -rf "$baseline"' EXIT
+          ref=$(git rev-parse --verify --end-of-options "$BENCH_BASELINE^{commit}")
+          git archive "$ref" src | tar -x -C "$baseline"
+          echo "Baseline $ref"
+          CYCLE_BENCH_SOURCE_ROOT="$baseline/src" composer bench -- --filter=RelationDatabaseBench 2>&1 | tee "$RUNNER_TEMP/cycle-bench-baseline.log"
+          grep -Eq 'Subjects: [1-9][0-9]*,' "$RUNNER_TEMP/cycle-bench-baseline.log"
+          echo "Current $GITHUB_SHA"
+          composer bench -- --filter=RelationDatabaseBench 2>&1 | tee "$RUNNER_TEMP/cycle-bench-current.log"
+          grep -Eq 'Subjects: [1-9][0-9]*,' "$RUNNER_TEMP/cycle-bench-current.log"
+        env:
+          CYCLE_TEST_DB_DRIVER: sqlserver
+          CYCLE_TEST_DB_NAME: master
+          CYCLE_TEST_DB_HOST: 127.0.0.1
+          CYCLE_TEST_DB_PORT: '1433'
+          CYCLE_TEST_DB_USER: sa
+          CYCLE_TEST_DB_PASSWORD: CycleTest-2026!
+          CYCLE_TEST_DB_TRUST_SERVER_CERTIFICATE: 'true'

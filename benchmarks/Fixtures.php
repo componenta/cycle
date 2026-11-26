@@ -86,3 +86,42 @@ final class HydrationChild
     public int $id;
     public int $recordId;
 }
+
+/** Numeric and binary keys share the same indexed workload. */
+final class DatabaseRelationFetcher extends DataFetcher
+{
+    public function __construct(\Cycle\Database\DatabaseInterface $db, private readonly bool $binary)
+    {
+        parent::__construct($db);
+    }
+
+    public function __invoke(int $size): array
+    {
+        return $this->doFetch(new Page($size, 0))->results;
+    }
+
+    protected function getTableName(): string
+    {
+        return 'cycle_bench_roots';
+    }
+
+    protected function select(?object $query): SelectQuery
+    {
+        return parent::select($query)->orderBy('seq');
+    }
+
+    protected function isBinaryRelationKey(string $column): bool
+    {
+        return $this->binary && in_array($column, ['id', 'owner_id'], true);
+    }
+
+    protected function loadRelations(array &$results, array $rows, ?object $query): void
+    {
+        $this->batchBelongsTo($results, $rows, 'owner_id', 'cycle_bench_owners',
+            transform: static fn (array $row): int => (int) $row['seq']);
+        $this->batchHasMany($results, $rows, 'children', 'cycle_bench_children', 'root_id',
+            transform: static fn (array $row): int => (int) $row['seq']);
+        $this->batchBelongsToMany($results, $rows, 'tags', 'cycle_bench_tags', 'cycle_bench_pivot',
+            'root_id', 'tag_id', transform: static fn (array $row): int => (int) $row['seq']);
+    }
+}
