@@ -125,7 +125,9 @@ it('binary keys load all three relation types', function (bool $explicitBinary, 
         $rows = (new BinaryRelationsFetcher($db, $explicitBinary))();
 
         expect($rows)->toBe($expected);
-        expect($logger->reads)->toBe($additionalKeys === 0 ? 4 : 7);
+        // MySQL inspects the target column and server version once per relation.
+        $metadataReads = $additionalKeys > 0 && $db->getType() === 'MySQL' ? 3 : 0;
+        expect($logger->reads)->toBe(($additionalKeys === 0 ? 4 : 7) + $metadataReads);
     } finally {
         foreach (['cycle_test_binary_pivot', 'cycle_test_binary_tags', 'cycle_test_binary_children',
             'cycle_test_binary_owners', 'cycle_test_binary_roots'] as $table) {

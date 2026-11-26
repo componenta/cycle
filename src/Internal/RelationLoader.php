@@ -207,10 +207,10 @@ final readonly class RelationLoader
             : null;
         $sqlServerSeed = $sqlite !== null && $driver->getType() === 'SQLServer' && count($ids) >= 16
             && self::uniformKeys($ids)
-            ? $this->typedSeed($sqlite, $driver, $prefix, true)
+            ? $this->typedSeed($sqlite, $driver, $prefix)
             : null;
-        $mysqlCast = $sqlite !== null && $driver->getType() === 'MySQL' && count($ids) >= 16
-            ? $this->mysqlCast($sqlite, $driver, $prefix, $ids, $binary)
+        $mysqlPlan = $sqlite !== null && $driver->getType() === 'MySQL' && count($ids) >= 16
+            ? $this->mysqlPlan($sqlite, $driver, $prefix, $ids, $binary)
             : null;
         // SQLite's conservative limit also supports builds with the older
         // 999-variable default; reserve room below SQL Server's 2100 limit.
@@ -239,8 +239,8 @@ final readonly class RelationLoader
                 continue;
             }
 
-            if ($sqlServerSeed !== null || $mysqlCast !== null) {
-                $query = self::serverKeyQuery($base, $sqlite, $bindings, $driver, $sqlServerSeed, $mysqlCast);
+            if ($sqlServerSeed !== null || $mysqlPlan !== null) {
+                $query = self::serverKeyQuery($base, $sqlite, $bindings, $driver, $sqlServerSeed, $mysqlPlan);
                 $parameters = new QueryParameters();
                 $sql = $compiler->compile($parameters, $prefix, $query);
                 self::readGroups($driver, $sql, $parameters->getParameters(), $groups, $transform);
@@ -409,12 +409,9 @@ final readonly class RelationLoader
      *
      * @param array{table: string, columns: list<string>, key: string, keyTable: string, keyColumn: string, alias: string, tableName: string, pivotForeignKey: ?string, relatedKey: ?string} $plan
      */
-    private function typedSeed(array $plan, DriverInterface $driver, string $prefix, bool $ordinal = false): string
+    private function typedSeed(array $plan, DriverInterface $driver, string $prefix): string
     {
-        $columns = $ordinal
-            ? [$plan['keyColumn'] . ' AS componenta_value', new Fragment('-1 AS componenta_ordinal')]
-            : [$plan['keyColumn']];
-        $seed = $this->db->select($columns)
+        $seed = $this->db->select([$plan['keyColumn']])
             ->from($plan['keyTable'])
             ->where(new Fragment('1 = 0'));
         return $driver->getQueryCompiler()->compile(new QueryParameters(), $prefix, $seed);
@@ -456,26 +453,23 @@ final readonly class RelationLoader
     }
 
     /**
-     * MySQL chooses a common type for derived columns. Do not let a
-     * VARCHAR-derived key turn exact integer comparisons into floating
-     * point comparisons, or let the connection collation replace the
-     * target collation. Inspect only the actual target column, never
-     * infer its type from PHP's representation of the root key.
+     * MySQL chooses a common type for derived columns. Inspect the real
+     * lookup column before selecting a cast. Never use a string-derived
+     * comparison for integer keys, or replace the target collation.
      *
-     * The probe is scoped to this execution (no stale schema cache).
-     * Complex/unknown types and mixed representations retain direct
-     * per-key comparisons. Explicit binary keys need no metadata probe.
+     * Capability and column metadata are execution-scoped, not cached
+     * across requests or reconnections.
+     *
+     * @return array{cast: string, json: ?string}|null
      */
-    private function mysqlCast(array $plan, DriverInterface $driver, string $prefix, array $ids, bool $binary): ?string
+    private function mysqlPlan(array $plan, DriverInterface $driver, string $prefix, array $ids, bool $binary): ?array
     {
-        if ($binary) {
-            return 'CAST(? AS BINARY)';
-        }
         if (!self::uniformKeys($ids)) {
             return null;
         }
         $statement = $driver->query(
-            'SELECT DATA_TYPE AS data_type, CHARACTER_SET_NAME AS character_set_name, COLLATION_NAME AS collation_name'
+            'SELECT VERSION() AS server_version, DATA_TYPE AS data_type,'
+                . ' CHARACTER_SET_NAME AS character_set_name, COLLATION_NAME AS collation_name'
                 . ' FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE()'
                 . ' AND TABLE_NAME = ? AND COLUMN_NAME = ?',
             [new Parameter($prefix . $plan['keyTable']), new Parameter($plan['keyColumn'])],
@@ -488,40 +482,55 @@ final readonly class RelationLoader
         if ($column === false) {
             return null;
         }
-
+        $version = $column['server_version'];
+        $json = is_string($version) && stripos($version, 'MariaDB') === false
+            && preg_match('/\A(\d+\.\d+\.\d+)/', $version, $matches) === 1
+            && version_compare($matches[1], '8.0.4', '>=');
         $type = strtolower($column['data_type']);
-        if (in_array($type, ['tinyint', 'smallint', 'mediumint', 'int', 'bigint'], true)) {
+
+        if (in_array($type, ['binary', 'varbinary', 'tinyblob', 'blob', 'mediumblob', 'longblob'], true)
+            && is_string($ids[0])) {
             foreach ($ids as $id) {
-                if (!is_int($id) && (!is_string($id) || (string) (int) $id !== $id)) {
-                    return null;
+                if (strlen($id) > 256) {
+                    $json = false;
+                    break;
                 }
             }
-            return 'CAST(? AS SIGNED)';
+            return ['cast' => 'CAST(? AS BINARY)', 'json' => $json ? 'binary' : null];
         }
-        if (!is_string($ids[0])) {
+        if ($binary) {
+            // An explicit LOB binding must not become a text parameter.
             return null;
         }
-        if (in_array($type, ['binary', 'varbinary', 'tinyblob', 'blob', 'mediumblob', 'longblob'], true)) {
-            return 'CAST(? AS BINARY)';
+        if (in_array($type, ['tinyint', 'smallint', 'mediumint', 'int', 'bigint'], true)
+            && is_int($ids[0])) {
+            return ['cast' => 'CAST(? AS SIGNED)', 'json' => $json ? 'integer' : null];
         }
-        if (!in_array($type, ['char', 'varchar', 'tinytext', 'text', 'mediumtext', 'longtext'], true)) {
+        if (!is_string($ids[0]) || !in_array($type, ['char', 'varchar', 'tinytext', 'text', 'mediumtext', 'longtext'], true)) {
             return null;
         }
         $charset = $column['character_set_name'];
         $collation = $column['collation_name'];
-        if (!is_string($charset) || !is_string($collation)
-            || !self::simpleIdentifier($charset) || !self::simpleIdentifier($collation)) {
+        // A conversion to a narrower charset can replace input characters
+        // with '?'. Retain the original comparison in that case.
+        if ($charset !== 'utf8mb4' || !is_string($collation) || !self::simpleIdentifier($collation)) {
             return null;
         }
-        return 'CAST(? AS CHAR CHARACTER SET ' . $charset . ') COLLATE ' . $collation;
+        foreach ($ids as $id) {
+            if (preg_match('//u', $id) !== 1) {
+                return null;
+            }
+        }
+        return ['cast' => 'CAST(? AS CHAR CHARACTER SET utf8mb4) COLLATE ' . $collation, 'json' => null];
     }
 
     /**
-     * Join a relation of bound keys and ordinals rather than duplicating
-     * the target query in each arm. SQL Server's empty typed seed supplies
-     * column type and collation; the MySQL planner uses explicit casts.
+     * SQL Server uses a typed VALUES relation. Modern MySQL uses one JSON
+     * parameter for integers and short binary keys; the older-server and
+     * text paths use a derived relation of individual bound values.
      *
      * @param array<int, Parameter> $bindings
+     * @param array{cast: string, json: ?string}|null $mysql
      */
     private static function serverKeyQuery(
         SelectQuery $base,
@@ -529,28 +538,66 @@ final readonly class RelationLoader
         array $bindings,
         DriverInterface $driver,
         ?string $seed,
-        ?string $cast,
+        ?array $mysql,
     ): SelectQuery {
-        $arms = [];
-        if ($seed !== null) {
-            $arms[] = $seed;
-        }
-        foreach ($bindings as $ordinal => $parameter) {
-            $arms[] = 'SELECT ' . ($cast ?? '?') . ' AS componenta_value, '
-                . $ordinal . ' AS componenta_ordinal';
-        }
         $compiler = $driver->getQueryCompiler();
         $alias = $compiler->quoteIdentifier('_componenta_keys');
         $value = $alias . '.' . $compiler->quoteIdentifier('componenta_value');
         $ordinal = $alias . '.' . $compiler->quoteIdentifier('componenta_ordinal');
         $key = $compiler->quoteIdentifier($plan['alias'] . '.' . $plan['keyColumn']);
-        $keys = new Fragment('(' . implode("\nUNION ALL\n", $arms) . ') AS ' . $alias, ...array_values($bindings));
 
-        return (clone $base)
+        if ($seed !== null) {
+            $rows = ['((' . $seed . '), -1)'];
+            foreach ($bindings as $index => $parameter) {
+                $rows[] = '(?, ' . $index . ')';
+            }
+            $keys = new Fragment(
+                '(VALUES ' . implode(', ', $rows) . ') AS ' . $alias
+                    . '(componenta_value, componenta_ordinal)',
+                ...array_values($bindings),
+            );
+            $ordinalFilter = new Fragment($ordinal . ' >= 0');
+        } elseif ($mysql['json'] !== null) {
+            $binary = $mysql['json'] === 'binary';
+            $values = array_map(
+                static fn (Parameter $parameter): int|string => $binary
+                    ? bin2hex($parameter->getValue())
+                    : $parameter->getValue(),
+                array_values($bindings),
+            );
+            $type = $binary ? 'VARCHAR(512)' : 'BIGINT';
+            $keys = new Fragment(
+                "JSON_TABLE(?, '$[*]' COLUMNS (componenta_ordinal FOR ORDINALITY,"
+                    . " componenta_value $type PATH '$' ERROR ON ERROR)) AS " . $alias,
+                json_encode($values, JSON_THROW_ON_ERROR),
+            );
+            $ordinal = $ordinal . ' - 1 + ' . array_key_first($bindings);
+            if ($binary) {
+                $value = 'UNHEX(' . $value . ')';
+            }
+            $ordinalFilter = null;
+        } else {
+            $arms = [];
+            foreach ($bindings as $index => $parameter) {
+                $arms[] = 'SELECT ' . $mysql['cast'] . ' AS componenta_value, '
+                    . $index . ' AS componenta_ordinal';
+            }
+            $keys = new Fragment(
+                '(' . implode("\nUNION ALL\n", $arms) . ') AS ' . $alias,
+                ...array_values($bindings),
+            );
+            $ordinalFilter = null;
+        }
+
+        $query = (clone $base)
             ->from([$keys, $plan['table']])
             ->columns([new Fragment($ordinal), ...$plan['columns']])
-            ->where(new Fragment($key . ' = ' . $value))
-            ->where(new Fragment($ordinal . ' >= 0'));
+            ->where(new Fragment($key . ' = ' . $value));
+        if ($ordinalFilter !== null) {
+            $query->where($ordinalFilter);
+        }
+
+        return $query;
     }
 
     private static function includeKey(array $columns, string $key): array
