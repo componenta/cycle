@@ -7,70 +7,10 @@ namespace Componenta\Cycle\Benchmark;
 use Componenta\Config\ConfigFactory;
 use Componenta\Config\Environment;
 use Componenta\Cycle\ConfigProvider;
-use Componenta\Cycle\DataFetcher;
-use Componenta\Cycle\Query\PaginableInterface;
-use Componenta\Cycle\Query\RequiresTotalCountInterface;
 use Componenta\DI\ContainerFactory;
-use Componenta\Stdlib\Paginator;
 use Cycle\Database\DatabaseManager;
-use Cycle\Database\Query\SelectQuery;
-
 use Cycle\Database\DatabaseInterface;
 use PhpBench\Attributes as Bench;
-
-class RowsFetcher extends DataFetcher
-{
-    protected array $fieldMapping = ['amount' => 'total'];
-    protected array $excluded = ['email'];
-
-    public function __invoke(array $rows): iterable
-    {
-        return $this->fetchResults($rows, null, null);
-    }
-}
-
-final class CustomRowsFetcher extends RowsFetcher
-{
-    protected function mapAmount(mixed $value, array $row, ?object $query): int
-    {
-        return (int) $value;
-    }
-}
-
-class Page implements PaginableInterface
-{
-    public function __construct(public int $limit = 100, public int $offset = 500) {}
-}
-
-final class CountedPage extends Page implements RequiresTotalCountInterface {}
-
-class PageFetcher extends DataFetcher
-{
-    protected function getTableName(): string
-    {
-        return 'records';
-    }
-
-    protected function select(?object $query): SelectQuery
-    {
-        return parent::select($query)->orderBy('id');
-    }
-
-    public function __invoke(Page $page): Paginator
-    {
-        return $this->doFetch($page);
-    }
-}
-
-final class RelatedPageFetcher extends PageFetcher
-{
-    protected function loadRelations(array &$results, array $rows, ?object $query): void
-    {
-        $this->batchBelongsTo($results, $rows, 'owner_id', 'owners');
-        $this->batchHasMany($results, $rows, 'children', 'children', 'record_id');
-        $this->batchBelongsToMany($results, $rows, 'tags', 'tags', 'record_tags', 'record_id', 'tag_id');
-    }
-}
 
 #[Bench\Iterations(9)]
 #[Bench\BeforeMethods('prepare')]

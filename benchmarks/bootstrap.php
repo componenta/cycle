@@ -41,3 +41,5 @@ function check(bool $condition): void
         throw new RuntimeException('Benchmark preflight returned an unexpected result.');
     }
 }
+
+require_once __DIR__ . '/Fixtures.php';

@@ -34,18 +34,6 @@ The same runner, PHP 8.5.13 and installed dependency set were used for the basel
 
 These are individual controlled-run measurements, not statistical proof of a universal speedup. Those measurements are historical.
 
-### Comparing the entire package source
-
-Use the same dependencies and benchmark scripts for both revisions. The source-root option overrides the entire package source. The following was the historical comparison baseline.
-
-```sh
-baseline=$(mktemp -d)
-git archive 19db08122391796313660e0d3d871245b7597693 src | tar -x -C "$baseline"
-CYCLE_BENCH_SOURCE_ROOT="$baseline/src" composer bench
-composer bench
-rm -rf "$baseline"
-```
-
 ## Performance review (25 November 2026)
 
 The complete package source at `19db08122391796313660e0d3d871245b7597693` was compared with `2f31a412ff081fbc59efe0021472c98f6eb9f467` on the same PHP 8.5.13 runner using the same installed dependencies. See the [comparison run](https://github.com/componenta/cycle/actions/runs/45532189092/job/138929968553). Each median is over nine samples.

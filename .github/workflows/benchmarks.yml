@@ -41,6 +41,8 @@ jobs:
           ref=$(git rev-parse --verify --end-of-options "$BENCH_BASELINE^{commit}")
           git archive "$ref" src | tar -x -C "$baseline"
           echo "Baseline $ref"
-          CYCLE_BENCH_SOURCE_ROOT="$baseline/src" composer bench
+          CYCLE_BENCH_SOURCE_ROOT="$baseline/src" composer bench | tee "$RUNNER_TEMP/cycle-bench-baseline.log"
+          grep -Eq 'Subjects: [1-9][0-9]*,' "$RUNNER_TEMP/cycle-bench-baseline.log"
           echo "Current $GITHUB_SHA"
-          composer bench
+          composer bench | tee "$RUNNER_TEMP/cycle-bench-current.log"
+          grep -Eq 'Subjects: [1-9][0-9]*,' "$RUNNER_TEMP/cycle-bench-current.log"

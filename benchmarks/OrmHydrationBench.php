@@ -14,31 +14,7 @@ use Cycle\ORM\ORMInterface;
 use Cycle\ORM\Relation;
 use Cycle\ORM\RelationMap;
 use Cycle\ORM\SchemaInterface;
-
 use PhpBench\Attributes as Bench;
-
-final class HydrationRecord
-{
-    public int $id;
-    public string $first;
-    public string $last;
-    public string $email;
-    public string $phone;
-    public string $city;
-    public string $region;
-    public string $country;
-    public string $address;
-    public string $zip;
-    public int $age;
-    public bool $active;
-    public array $related;
-}
-
-final class HydrationChild
-{
-    public int $id;
-    public int $recordId;
-}
 
 #[Bench\Iterations(9)]
 #[Bench\BeforeMethods('prepare')]
