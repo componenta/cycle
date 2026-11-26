@@ -229,6 +229,73 @@ it('retains equivalent relation keys when SQLite applies column affinity', funct
     'text affinity' => ['TEXT', '1'],
 ]);
 
+
+it('uses database equality for textual and non-canonical relation keys', function (string $type, string $rootValues, string $ownerValues, string $childValues, string $pivotValues, array $expected): void {
+    $composition = (new ConfigFactory())->create(
+        new Environment(['DB_DRIVER' => 'sqlite', 'DB_NAME' => ':memory:']),
+        new ConfigProvider(),
+    );
+    $db = (new ContainerFactory())->create($composition->config, $composition->dependencies)
+        ->get(DatabaseManager::class)->database();
+
+    $db->execute('CREATE TABLE records (id, owner_id)');
+    $db->execute("CREATE TABLE owners (id $type, label TEXT)");
+    $db->execute("CREATE TABLE children (id INTEGER, record_id $type)");
+    $db->execute('CREATE TABLE tags (id INTEGER)');
+    $db->execute("CREATE TABLE record_tags (record_id $type, tag_id INTEGER)");
+    $db->execute('INSERT INTO records VALUES ' . $rootValues);
+    $db->execute('INSERT INTO owners VALUES ' . $ownerValues);
+    $db->execute('INSERT INTO children VALUES ' . $childValues);
+    $db->execute('INSERT INTO tags VALUES (10), (11)');
+    $db->execute('INSERT INTO record_tags VALUES ' . $pivotValues);
+
+    $logger = new RelationQueryLogger();
+    $db->getDriver(DatabaseInterface::READ)->setLogger($logger);
+    $results = (new BatchRecordsFetcher($db))();
+
+    expect($results)->toHaveCount(count($expected));
+    foreach ($results as $index => $result) {
+        expect($result['id'])->toBe($expected[$index][0]);
+        expect($result['owner']['label'] ?? null)->toBe($expected[$index][1]);
+        expect(array_column($result['children'], 'id'))->toEqualCanonicalizing($expected[$index][2]);
+        expect(array_column($result['tags'], 'id'))->toEqualCanonicalizing($expected[$index][3]);
+    }
+    expect($logger->queries)->toHaveCount(4);
+})->with([
+    'case insensitive and multiple matching rows' => [
+        'TEXT COLLATE NOCASE',
+        "('ABC', 'ABC'), ('abc', 'abc'), ('missing', 'missing')",
+        "('abc', 'owner')",
+        "(8, 'ABC'), (9, 'abc')",
+        "('ABC', 10), ('abc', 11)",
+        [['ABC', 'owner', [8, 9], [10, 11]], ['abc', 'owner', [8, 9], [10, 11]], ['missing', null, [], []]],
+    ],
+    'integer affinity with noncanonical strings' => [
+        'INTEGER',
+        "(1, 1), ('01', '01'), ('1', '1'), ('2', '2')",
+        "(1, 'owner')",
+        "(8, 1), (9, '01')",
+        "(1, 10), ('01', 11)",
+        [[1, 'owner', [8, 9], [10, 11]], ['01', 'owner', [8, 9], [10, 11]], ['1', 'owner', [8, 9], [10, 11]], ['2', null, [], []]],
+    ],
+    'text affinity and trailing spaces with integer input' => [
+        'TEXT COLLATE RTRIM',
+        "(1, 1)",
+        "('1 ', 'owner')",
+        "(8, '1 '), (9, '1')",
+        "('1 ', 10), ('1', 11)",
+        [[1, 'owner', [8, 9], [10, 11]]],
+    ],
+    'case sensitive keys must remain distinct' => [
+        'TEXT COLLATE BINARY',
+        "('ABC', 'ABC'), ('abc', 'abc')",
+        "('ABC', 'upper'), ('abc', 'lower')",
+        "(8, 'ABC'), (9, 'abc')",
+        "('ABC', 10), ('abc', 11)",
+        [['ABC', 'upper', [8], [10]], ['abc', 'lower', [9], [11]]],
+    ],
+]);
+
 final class BatchRecordsFetcher extends DataFetcher
 {
     public function __invoke(): array
