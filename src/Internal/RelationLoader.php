@@ -186,6 +186,12 @@ final readonly class RelationLoader
     private function match(SelectQuery $base, string $column, array $ids, bool $binary, ?array $sqlite): array
     {
         $groups = [];
+        if ($ids === []) {
+            return $groups;
+        }
+        $driver = $base->getDriver() ?? throw new \LogicException('A relation query must have a database driver.');
+        $compiler = $driver->getQueryCompiler();
+        $prefix = $base->getPrefix() ?? '';
         foreach (array_chunk($ids, self::BATCH_SIZE, true) as $chunk) {
             $bindings = array_map(
                 static fn (mixed $id): Parameter => new Parameter($id, $binary ? PDO::PARAM_LOB : Parameter::DETECT_TYPE),
@@ -193,29 +199,30 @@ final readonly class RelationLoader
             );
             if ($sqlite !== null && $this->db->getType() === 'SQLite') {
                 $query = self::sqliteQuery($base, $sqlite, $bindings);
+                $parameters = new QueryParameters();
+                $sql = $compiler->compile($parameters, $prefix, $query);
+                $queryBindings = $parameters->getParameters();
             } else {
                 // Each comparison is typed by its actual target column. A
                 // heterogeneous VALUES table would coerce or reject keys on
                 // PostgreSQL/SQL Server. UNION ALL also preserves duplicates.
-                $query = null;
+                // Compile standalone arms: SQLite rejects the parentheses
+                // that DBAL adds around nested SELECT fragments.
+                $arms = [];
+                $queryBindings = [];
                 foreach ($bindings as $ordinal => $parameter) {
                     $arm = (clone $base)
                         ->columns([new Fragment((string) $ordinal), ...$base->getColumns()])
                         ->where($column, '=', $parameter);
-                    if ($query === null) {
-                        $query = $arm;
-                    } else {
-                        $query->unionAll($arm);
-                    }
+                    $parameters = new QueryParameters();
+                    $arms[] = $compiler->compile($parameters, $prefix, $arm);
+                    array_push($queryBindings, ...$parameters->getParameters());
                 }
+                $sql = implode("\nUNION ALL\n", $arms);
             }
 
-            // Compile compound statements with their actual parameters; do
-            // not reconstruct the bindings from a cached query shape.
-            $driver = $query->getDriver();
-            $parameters = new QueryParameters();
-            $sql = $driver->getQueryCompiler()->compile($parameters, $query->getPrefix() ?? '', $query);
-            $statement = $driver->query($sql, $parameters->getParameters());
+            // Execute with the exact bindings emitted by each compiled arm.
+            $statement = $driver->query($sql, $queryBindings);
             try {
                 foreach ($statement->fetchAll(PDO::FETCH_GROUP | PDO::FETCH_ASSOC) as $ordinal => $matches) {
                     $groups[$ordinal] = $matches;
