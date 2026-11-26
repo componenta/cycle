@@ -407,7 +407,7 @@ abstract class DataFetcher
      * Batch load belongsTo relation (N->1).
      *
      * Collects unique foreign key values from raw rows, executes bounded
-     * WHERE IN queries, and attaches the related data to each result.
+     * parameterized queries using database equality, and attaches the related data to each result.
      *
      * @param array<int, array>  $results    Transformed results (by reference)
      * @param array<int, array>  $rows       Raw database rows
@@ -443,8 +443,8 @@ abstract class DataFetcher
     /**
      * Batch load hasMany relation (1->N).
      *
-     * Collects unique local key values, executes bounded WHERE IN queries
-     * on the related table, groups results, and attaches arrays to each result.
+     * Collects unique local key values, executes bounded parameterized queries
+     * on the related table using database equality, groups results, and attaches arrays to each result.
      *
      * @param array<int, array>  $results    Transformed results (by reference)
      * @param array<int, array>  $rows       Raw database rows

@@ -12,6 +12,8 @@ composer require componenta/cycle
 
 Install `componenta/cycle-app` only when an application needs entity discovery, schema-related console commands, or framework cache integration.
 
+The package supports Config 3 with DI 5, and Config 4 with DI 6 when compatible versions of all transitive dependencies are available. PHP 8.4 is supported with DI 5; DI 6 requires the PHP version declared by that package.
+
 ## Related Packages
 
 | Package | Why it matters here |
@@ -42,6 +44,8 @@ Use repositories for aggregate persistence and identity-based lookups. Keep busi
 - batch relation helpers for belongs-to, has-many, and many-to-many reads
 
 Fetcher methods transform database rows into arrays or projection objects. Relation loading is batched after rows are collected, so fetchers can avoid N+1 queries.
+
+Relation keys are compared by the database, including its collation and type-affinity rules. Distinct requested keys retain separate result groups even when the database considers them equivalent. Each batch contains at most 500 keys and is reduced further when the compiled projection requires more bound parameters. For simple SQLite projections, a joined VALUES table avoids compound SELECT planning. Other projections and drivers use bounded, parameterized compound SELECTs.
 
 ## Query Contracts
 
