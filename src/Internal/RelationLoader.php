@@ -47,7 +47,7 @@ final readonly class RelationLoader
             $tableKey,
             $ids,
             $binary,
-            self::sqlitePlan($table, $columns, $tableKey),
+            self::joinPlan($table, $columns, $tableKey),
         );
 
         foreach ($results as $index => &$result) {
@@ -88,7 +88,7 @@ final readonly class RelationLoader
             $foreignKey,
             $ids,
             $binary,
-            self::sqlitePlan($table, $columns, $foreignKey),
+            self::joinPlan($table, $columns, $foreignKey),
             $transform,
         );
         self::attachMany($results, $resultKey, $ordinals, $groups);
@@ -120,7 +120,7 @@ final readonly class RelationLoader
             ->on("p.$pivotForeignKey", "r.$relatedKey");
 
         $sqlite = self::simpleIdentifier($pivotTable) && self::simpleIdentifier($pivotLocalKey)
-            ? self::sqlitePlan($relatedTable, $columns, $pivotLocalKey, 'p')
+            ? self::joinPlan($relatedTable, $columns, $pivotLocalKey, 'p', $pivotTable)
             : null;
         $groups = $this->match($base, "p.$pivotLocalKey", $ids, $binary, $sqlite, $transform);
         self::attachMany($results, $resultKey, $ordinals, $groups);
@@ -182,7 +182,7 @@ final readonly class RelationLoader
      * column as the group key and never exposes it to projection callbacks.
      *
      * @param list<mixed> $ids
-     * @param array{table: string, columns: list<string>, key: string}|null $sqlite
+     * @param array{table: string, columns: list<string>, key: string, keyTable: string, keyColumn: string}|null $sqlite
      * @return array<int, list<array>>
      */
     private function match(
@@ -202,6 +202,9 @@ final readonly class RelationLoader
         $compiler = $driver->getQueryCompiler();
         $prefix = $base->getPrefix() ?? '';
         $projection = self::groupProjection($base, $driver);
+        $postgresSeed = $sqlite !== null && $driver->getType() === 'Postgres'
+            ? $this->postgresSeed($sqlite, $driver, $prefix)
+            : null;
         // SQLite's conservative limit also supports builds with the older
         // 999-variable default; reserve room below SQL Server's 2100 limit.
         $maxParameters = match ($driver->getType()) {
@@ -216,6 +219,13 @@ final readonly class RelationLoader
             );
             if ($sqlite !== null && $driver->getType() === 'SQLite') {
                 $query = self::sqliteQuery($base, $sqlite, $bindings);
+                $parameters = new QueryParameters();
+                $sql = $compiler->compile($parameters, $prefix, $query);
+                self::readGroups($driver, $sql, $parameters->getParameters(), $groups, $transform);
+                continue;
+            }
+            if ($postgresSeed !== null) {
+                $query = self::postgresQuery($base, $sqlite, $bindings, $postgresSeed);
                 $parameters = new QueryParameters();
                 $sql = $compiler->compile($parameters, $prefix, $query);
                 self::readGroups($driver, $sql, $parameters->getParameters(), $groups, $transform);
@@ -304,13 +314,12 @@ final readonly class RelationLoader
     }
 
     /**
-     * SQLite VALUES retains the individual storage class of each bound key.
-     * Join once for ordinary projections instead of planning one SELECT per
-     * key. Complex trusted projections use the portable compound-query path.
+     * Simple projections can be joined to a native lookup-key relation.
+     * Complex trusted projections use the portable compound-query path.
      *
      * @return array{table: string, columns: list<string>, key: string}|null
      */
-    private static function sqlitePlan(string $table, array $columns, string $column, string $alias = 'r'): ?array
+    private static function joinPlan(string $table, array $columns, string $column, string $alias = 'r', ?string $keyTable = null): ?array
     {
         if (!self::simpleIdentifier($table) || !self::simpleIdentifier($column) || !array_is_list($columns)) {
             return null;
@@ -325,7 +334,13 @@ final readonly class RelationLoader
                 return null;
             }
         }
-        return ['table' => "$table AS r", 'columns' => $qualified, 'key' => "\"$alias\".\"$column\""];
+        return [
+            'table' => "$table AS r",
+            'columns' => $qualified,
+            'key' => "\"$alias\".\"$column\"",
+            'keyTable' => $keyTable ?? $table,
+            'keyColumn' => $column,
+        ];
     }
 
     private static function simpleIdentifier(string $name): bool
@@ -346,6 +361,41 @@ final readonly class RelationLoader
             ->from([$plan['table'], $keys])
             ->columns([new Fragment('"_componenta_keys"."column2"'), ...$plan['columns']])
             ->where(new Fragment($plan['key'] . ' = "_componenta_keys"."column1"'));
+    }
+
+    /**
+     * PostgreSQL infers bound values from the actual lookup column, not
+     * from the PHP representation. The empty scalar subquery supplies its
+     * SQL type without reading any target rows.
+     *
+     * @param array{table: string, columns: list<string>, key: string, keyTable: string, keyColumn: string} $plan
+     */
+    private function postgresSeed(array $plan, DriverInterface $driver, string $prefix): string
+    {
+        $seed = $this->db->select([$plan['keyColumn']])
+            ->from($plan['keyTable'])
+            ->where(new Fragment('1 = 0'));
+        return $driver->getQueryCompiler()->compile(new QueryParameters(), $prefix, $seed);
+    }
+
+    /** @param array<int, Parameter> $bindings */
+    private static function postgresQuery(SelectQuery $base, array $plan, array $bindings, string $seed): SelectQuery
+    {
+        // The first array slot is a typed SQL NULL. WITH ORDINALITY
+        // associates every remaining value with its exact input position,
+        // even when distinct inputs compare equal in the database.
+        $placeholders = implode(', ', array_fill(0, count($bindings), '?'));
+        $keys = new Fragment(
+            'unnest(ARRAY[(' . $seed . '), ' . $placeholders
+                . ']) WITH ORDINALITY AS "_componenta_keys"("value", "ordinal")',
+            ...array_values($bindings),
+        );
+        $first = array_key_first($bindings);
+        return (clone $base)
+            ->from([$keys, $plan['table']])
+            ->columns([new Fragment('"_componenta_keys"."ordinal" - 2 + ' . $first), ...$plan['columns']])
+            ->where(new Fragment($plan['key'] . ' = "_componenta_keys"."value"'))
+            ->where(new Fragment('"_componenta_keys"."ordinal" > 1'));
     }
 
     private static function includeKey(array $columns, string $key): array
