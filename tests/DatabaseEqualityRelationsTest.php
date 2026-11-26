@@ -30,7 +30,7 @@ function relationEqualityDatabase(): DatabaseInterface
         ->get(DatabaseManager::class)->database();
 }
 
-it('matches relation keys using the configured database comparison and retains projection aliases', function (bool $numeric): void {
+it('matches relation keys using the configured database comparison and retains projection aliases', function (bool $numeric, bool $wildcard): void {
     $db = relationEqualityDatabase();
 
     $type = $numeric ? 'INTEGER' : match ($db->getType()) {
@@ -77,7 +77,7 @@ it('matches relation keys using the configured database comparison and retains p
             }
         };
         $db->getDriver(DatabaseInterface::READ)->setLogger($logger);
-        $fetcher = new DatabaseEqualityFetcher($db);
+        $fetcher = new DatabaseEqualityFetcher($db, $wildcard);
         $rows = $fetcher();
         expect($rows)->toHaveCount(4);
         expect($logger->reads)->toBe(4);
@@ -98,13 +98,20 @@ it('matches relation keys using the configured database comparison and retains p
         }
     }
 })->with([
-    'numeric target and noncanonical text keys' => [true],
-    'text target and database collation' => [false],
+    'numeric target and noncanonical text keys' => [true, false],
+    'text target and database collation' => [false, false],
+    'numeric target with default projection' => [true, true],
+    'collation with default projection' => [false, true],
 ]);
 
 final class DatabaseEqualityFetcher extends DataFetcher
 {
     public int $ownerTransforms = 0;
+
+    public function __construct(DatabaseInterface $db, private readonly bool $wildcard)
+    {
+        parent::__construct($db);
+    }
 
     public function __invoke(): array
     {
@@ -125,15 +132,15 @@ final class DatabaseEqualityFetcher extends DataFetcher
     {
         // Alias forces the portable path even on SQLite.
         $this->batchBelongsTo($results, $rows, 'owner_id', 'cycle_test_eq_owners',
-            columns: ['label AS owner_label'], transform: function (array $row): string {
+            columns: $this->wildcard ? ['*'] : ['label AS owner_label'], transform: function (array $row): string {
                 ++$this->ownerTransforms;
-                expect(array_keys($row))->toBe(['owner_label', 'id']);
-                return $row['owner_label'];
+                expect(array_keys($row))->toBe($this->wildcard ? ['id', 'label'] : ['owner_label', 'id']);
+                return $row[$this->wildcard ? 'label' : 'owner_label'];
             });
         $this->batchHasMany($results, $rows, 'children', 'cycle_test_eq_children', 'root_id',
-            columns: ['id'], transform: static fn (array $row): int => (int) $row['id']);
+            columns: $this->wildcard ? ['*'] : ['id'], transform: static fn (array $row): int => (int) $row['id']);
         $this->batchBelongsToMany($results, $rows, 'tags', 'cycle_test_eq_tags', 'cycle_test_eq_pivot',
-            'root_id', 'tag_id', columns: ['id'], transform: static fn (array $row): int => (int) $row['id']);
+            'root_id', 'tag_id', columns: $this->wildcard ? ['*'] : ['id'], transform: static fn (array $row): int => (int) $row['id']);
     }
 }
 
