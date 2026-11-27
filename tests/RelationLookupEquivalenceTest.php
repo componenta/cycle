@@ -666,3 +666,58 @@ it('preserves MySQL text parameter conversion when comparing to binary columns',
         $db->getDriver()->disconnect();
     }
 });
+
+
+it('preserves printable text keys and original binary bytes across MySQL connection encodings', function (bool $emulate, string $connection): void {
+    if (getenv('CYCLE_TEST_DB_DRIVER') !== 'mysql') {
+        \PHPUnit\Framework\Assert::markTestSkipped('MySQL text-bound binary comparisons.');
+    }
+    $db = new \Cycle\Database\Database('ascii-binary-test', '', \Cycle\Database\Driver\MySQL\MySQLDriver::create(
+        new \Cycle\Database\Config\MySQLDriverConfig(
+            new \Cycle\Database\Config\MySQL\TcpConnectionConfig(
+                database: getenv('CYCLE_TEST_DB_NAME') ?: 'cycle_tests',
+                host: getenv('CYCLE_TEST_DB_HOST') ?: '127.0.0.1',
+                port: (int) (getenv('CYCLE_TEST_DB_PORT') ?: 3306),
+                user: getenv('CYCLE_TEST_DB_USER') ?: 'root',
+                password: getenv('CYCLE_TEST_DB_PASSWORD') ?: '',
+                options: [\PDO::ATTR_EMULATE_PREPARES => $emulate],
+            ),
+            queryCache: false,
+        ),
+    ));
+    try {
+        $db->execute('SET NAMES latin1');
+        $db->execute('SET character_set_connection = ' . $connection);
+        $db->execute('CREATE TABLE cycle_test_lookup (lookup_key VARBINARY(64), seq INTEGER)');
+        $db->execute('CREATE INDEX cycle_test_lookup_idx ON cycle_test_lookup(lookup_key)');
+        $db->execute("INSERT INTO cycle_test_lookup VALUES (X'61', 1), (X'6120', 2), (X'41', 3), (X'0061', 4), (X'00610020', 5), (X'0041', 6), (X'', 7), (X'302031', 8), (X'612262', 9), (X'615C62', 10)");
+        $keys = ['a', 'a ', 'A', '', '0 1', 'a"b', "a\\b", ...array_map('strval', range(10, 40))];
+        $oracle = static function () use ($db, $keys): array {
+            $expected = [];
+            foreach ($keys as $key) {
+                $matches = $db->select('seq')->from('cycle_test_lookup')
+                    ->where('lookup_key', '=', new Parameter($key, \PDO::PARAM_STR))->fetchAll();
+                $values = array_map(static fn (array $row): int => (int) $row['seq'], $matches);
+                sort($values);
+                $expected[] = $values;
+            }
+            return $expected;
+        };
+        $fetcher = new RelationLookupOracleFetcher($db, false);
+        $expected = $oracle();
+        expect($fetcher($keys))->toBe($expected);
+        expect($fetcher($keys))->toBe($expected);
+        // Metadata and encoding eligibility must not be reused across calls.
+        $db->execute('SET character_set_connection = ' . ($connection === 'utf16' ? 'utf8mb4' : 'utf16'));
+        expect($fetcher($keys))->toBe($oracle());
+        expect($fetcher($keys))->toBe($oracle());
+    } finally {
+        $db->execute('DROP TABLE IF EXISTS cycle_test_lookup');
+        $db->getDriver()->disconnect();
+    }
+})->with([
+    'native UTF8' => [false, 'utf8mb4'],
+    'emulated UTF8' => [true, 'utf8mb4'],
+    'native UTF16' => [false, 'utf16'],
+    'emulated UTF16' => [true, 'utf16'],
+]);
