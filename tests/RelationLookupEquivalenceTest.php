@@ -128,3 +128,51 @@ final class RelationLookupOracleFetcher extends DataFetcher
         }
     }
 }
+
+it('does not let a permanent MySQL table change temporary table comparison rules', function (): void {
+    $db = relationEqualityDatabase();
+    if ($db->getType() !== 'MySQL') {
+        \PHPUnit\Framework\Assert::markTestSkipped('MySQL temporary table shadowing.');
+    }
+    try {
+        $db->execute('CREATE TABLE cycle_test_lookup (lookup_key VARCHAR(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci, seq INTEGER)');
+        $db->execute('CREATE TEMPORARY TABLE cycle_test_lookup (lookup_key VARCHAR(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin, seq INTEGER)');
+        $db->execute("INSERT INTO cycle_test_lookup VALUES ('abc', 1), ('ABC', 2)");
+        $keys = ['abc', 'ABC', ...array_map(static fn (int $i): string => "missing_$i", range(1, 30))];
+        $expected = [[1], [2], ...array_fill(0, 30, [])];
+        expect((new RelationLookupOracleFetcher($db, false))($keys))->toBe($expected);
+    } finally {
+        $db->execute('DROP TEMPORARY TABLE IF EXISTS cycle_test_lookup');
+        $db->execute('DROP TABLE IF EXISTS cycle_test_lookup');
+    }
+});
+
+it('preserves PostgreSQL domain-specific equality instead of coercing to its base type', function (): void {
+    $db = relationEqualityDatabase();
+    if ($db->getType() !== 'Postgres') {
+        \PHPUnit\Framework\Assert::markTestSkipped('PostgreSQL domain operator resolution.');
+    }
+    try {
+        $db->execute('CREATE DOMAIN cycle_test_lookup_domain AS INTEGER');
+        $db->execute("CREATE FUNCTION cycle_test_lookup_eq(cycle_test_lookup_domain, cycle_test_lookup_domain) RETURNS boolean LANGUAGE SQL IMMUTABLE AS 'SELECT abs($1::integer) = abs($2::integer)'");
+        $db->execute('CREATE OPERATOR = (LEFTARG = cycle_test_lookup_domain, RIGHTARG = cycle_test_lookup_domain, FUNCTION = cycle_test_lookup_eq)');
+        $db->execute('CREATE TABLE cycle_test_lookup (lookup_key cycle_test_lookup_domain, seq INTEGER)');
+        $db->execute('INSERT INTO cycle_test_lookup VALUES (1, 1), (-1, 2)');
+        $keys = ['1', '-1', ...array_map('strval', range(10, 40))];
+        $expected = [];
+        foreach ($keys as $value) {
+            $rows = $db->select('seq')->from('cycle_test_lookup')
+                ->where('lookup_key', '=', new Parameter($value))->fetchAll();
+            $seq = array_map(static fn (array $row): int => (int) $row['seq'], $rows);
+            sort($seq);
+            $expected[] = $seq;
+        }
+        expect($expected[0])->toBe([1, 2], 'Fixture must exercise the domain-specific operator.');
+        expect((new RelationLookupOracleFetcher($db, false))($keys))->toBe($expected);
+    } finally {
+        $db->execute('DROP TABLE IF EXISTS cycle_test_lookup');
+        $db->execute('DROP OPERATOR IF EXISTS = (cycle_test_lookup_domain, cycle_test_lookup_domain)');
+        $db->execute('DROP FUNCTION IF EXISTS cycle_test_lookup_eq(cycle_test_lookup_domain, cycle_test_lookup_domain)');
+        $db->execute('DROP DOMAIN IF EXISTS cycle_test_lookup_domain');
+    }
+});
