@@ -623,3 +623,46 @@ it('preserves SQL Server Unicode control characters and supplementary characters
         $db->execute('DROP TABLE IF EXISTS cycle_test_lookup');
     }
 });
+
+
+it('preserves MySQL text parameter conversion when comparing to binary columns', function (): void {
+    if (getenv('CYCLE_TEST_DB_DRIVER') !== 'mysql') {
+        \PHPUnit\Framework\Assert::markTestSkipped('MySQL connection character set conversion.');
+    }
+    $db = new \Cycle\Database\Database('charset-test', '', \Cycle\Database\Driver\MySQL\MySQLDriver::create(
+        new \Cycle\Database\Config\MySQLDriverConfig(
+            new \Cycle\Database\Config\MySQL\TcpConnectionConfig(
+                database: getenv('CYCLE_TEST_DB_NAME') ?: 'cycle_tests',
+                host: getenv('CYCLE_TEST_DB_HOST') ?: '127.0.0.1',
+                port: (int) (getenv('CYCLE_TEST_DB_PORT') ?: 3306),
+                user: getenv('CYCLE_TEST_DB_USER') ?: 'root',
+                password: getenv('CYCLE_TEST_DB_PASSWORD') ?: '',
+                options: [\PDO::ATTR_EMULATE_PREPARES => true],
+            ),
+            queryCache: false,
+        ),
+    ));
+    try {
+        $db->execute('SET NAMES latin1');
+        $db->execute('SET character_set_connection = utf8mb4');
+        $db->execute('CREATE TABLE cycle_test_lookup (lookup_key VARBINARY(32), seq INTEGER)');
+        $db->execute("INSERT INTO cycle_test_lookup VALUES (X'E9', 1), (X'C3A9', 2), (X'C383C2A9', 3)");
+        $keys = ["\xe9", "\xc3\xa9", ...array_map('strval', range(1, 40))];
+        $expected = [];
+        foreach ($keys as $key) {
+            $matches = $db->select('seq')->from('cycle_test_lookup')
+                ->where('lookup_key', '=', new Parameter($key, \PDO::PARAM_STR))->fetchAll();
+            $values = array_map(static fn (array $row): int => (int) $row['seq'], $matches);
+            sort($values);
+            $expected[] = $values;
+        }
+        $fetcher = new RelationLookupOracleFetcher($db, false);
+        expect($expected[0])->not->toBe([1], 'The fixture must exercise character set conversion.');
+        expect($fetcher(array_slice($keys, 0, 10)))->toBe(array_slice($expected, 0, 10));
+        expect($fetcher($keys))->toBe($expected);
+        expect($fetcher($keys))->toBe($expected);
+    } finally {
+        $db->execute('DROP TABLE IF EXISTS cycle_test_lookup');
+        $db->getDriver()->disconnect();
+    }
+});
