@@ -6,7 +6,7 @@ on:
       baseline:
         description: Compatible source revision for comparison
         required: false
-        default: '3765c13658e0b2d6ef396ec1ba5e69d4bab465a4'
+        default: 'a5ca3b43c3b960d1c7885cd51c69861f9ae39e24'
   push:
     paths:
       - 'src/**'
@@ -21,8 +21,9 @@ permissions:
 jobs:
   compare:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     env:
-      BENCH_BASELINE: ${{ inputs.baseline || '3765c13658e0b2d6ef396ec1ba5e69d4bab465a4' }}
+      BENCH_BASELINE: ${{ inputs.baseline || 'a5ca3b43c3b960d1c7885cd51c69861f9ae39e24' }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -51,6 +52,7 @@ jobs:
 
   mysql:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     services:
       mysql:
         image: mysql:8.4
@@ -66,7 +68,7 @@ jobs:
           --health-timeout=5s
           --health-retries=10
     env:
-      BENCH_BASELINE: ${{ inputs.baseline || '3765c13658e0b2d6ef396ec1ba5e69d4bab465a4' }}
+      BENCH_BASELINE: ${{ inputs.baseline || 'a5ca3b43c3b960d1c7885cd51c69861f9ae39e24' }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -102,6 +104,7 @@ jobs:
 
   postgres:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     services:
       postgres:
         image: postgres:17
@@ -117,7 +120,7 @@ jobs:
           --health-timeout=5s
           --health-retries=10
     env:
-      BENCH_BASELINE: ${{ inputs.baseline || '3765c13658e0b2d6ef396ec1ba5e69d4bab465a4' }}
+      BENCH_BASELINE: ${{ inputs.baseline || 'a5ca3b43c3b960d1c7885cd51c69861f9ae39e24' }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -164,7 +167,7 @@ jobs:
         ports:
           - 1433:1433
     env:
-      BENCH_BASELINE: ${{ inputs.baseline || '3765c13658e0b2d6ef396ec1ba5e69d4bab465a4' }}
+      BENCH_BASELINE: ${{ inputs.baseline || 'a5ca3b43c3b960d1c7885cd51c69861f9ae39e24' }}
     steps:
       - uses: actions/checkout@v7
         with:
