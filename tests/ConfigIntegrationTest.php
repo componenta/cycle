@@ -261,11 +261,33 @@ it('uses a MySQL connection that round trips full UTF-8 text through the default
         } finally {
             $statement->close();
         }
-        $statement = $database->query('SELECT @@character_set_client AS client_charset, @@character_set_connection AS connection_charset');
+        $assertEncoding = static function () use ($database): void {
+            $statement = $database->query('SELECT @@character_set_client AS client_charset, @@character_set_connection AS connection_charset, @@character_set_results AS result_charset');
+            try {
+                $row = $statement->fetch();
+                expect($row['client_charset'])->toBe('utf8mb4');
+                expect($row['connection_charset'])->toBe('utf8mb4');
+                expect($row['result_charset'])->toBe('utf8mb4');
+            } finally {
+                $statement->close();
+            }
+        };
+        $assertEncoding();
+
+        // Force a different session encoding, then ensure that the driver
+        // really reconnects and restores the configured encoding.
+        $database->execute('SET NAMES latin1');
+        $driver = $database->getDriver();
+        $driver->disconnect();
+        expect($driver->isConnected())->toBeFalse();
+        $assertEncoding();
+        expect($driver->isConnected())->toBeTrue();
+
+        $second = 'Повторное подключение, 🚀, 𐐷';
+        $database->execute('INSERT INTO cycle_test_connection_utf8 (value) VALUES (?)', [new \Cycle\Database\Injection\Parameter($second)]);
+        $statement = $database->query('SELECT value FROM cycle_test_connection_utf8 WHERE value = ?', [new \Cycle\Database\Injection\Parameter($second)]);
         try {
-            $row = $statement->fetch();
-            expect($row['client_charset'])->toBe('utf8mb4');
-            expect($row['connection_charset'])->toBe('utf8mb4');
+            expect($statement->fetchColumn())->toBe($second);
         } finally {
             $statement->close();
         }
