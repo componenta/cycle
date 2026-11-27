@@ -476,3 +476,85 @@ it('preserves MySQL in-range noncanonical integer strings and latin1 ASCII compa
         $db->execute('DROP TABLE IF EXISTS cycle_test_lookup');
     }
 })->with([true, false]);
+
+
+it('uses the native PostgreSQL array expansion even with an application overload', function (): void {
+    $db = relationEqualityDatabase();
+    if ($db->getType() !== 'Postgres') {
+        \PHPUnit\Framework\Assert::markTestSkipped('PostgreSQL array function resolution.');
+    }
+    try {
+        $db->execute('CREATE FUNCTION public.unnest(VARCHAR[]) RETURNS SETOF VARCHAR LANGUAGE SQL IMMUTABLE AS \'SELECT NULL::VARCHAR WHERE FALSE\'');
+        $db->execute('CREATE TABLE cycle_test_lookup (lookup_key VARCHAR(64), seq INTEGER)');
+        $db->execute("INSERT INTO cycle_test_lookup VALUES ('abc', 1), ('ABC', 2)");
+        $fetcher = new RelationLookupOracleFetcher($db, false);
+        $keys = ['abc', 'ABC', ...array_map(static fn (int $i): string => "missing_$i", range(1, 40))];
+        $expected = [[1], [2], ...array_fill(0, 40, [])];
+        expect($fetcher(['abc', 'ABC']))->toBe([[1], [2]]);
+        expect($fetcher($keys))->toBe($expected);
+        expect($fetcher($keys))->toBe($expected);
+    } finally {
+        $db->execute('DROP TABLE IF EXISTS cycle_test_lookup');
+        $db->execute('DROP FUNCTION IF EXISTS public.unnest(VARCHAR[])');
+    }
+});
+
+it('retains PostgreSQL nondeterministic ICU collation in batched comparisons', function (): void {
+    $db = relationEqualityDatabase();
+    if ($db->getType() !== 'Postgres') {
+        \PHPUnit\Framework\Assert::markTestSkipped('PostgreSQL ICU collation.');
+    }
+    try {
+        $db->execute("CREATE COLLATION cycle_test_lookup_ci (provider = icu, locale = 'und-u-ks-level2', deterministic = false)");
+        $db->execute('CREATE TABLE cycle_test_lookup (lookup_key TEXT COLLATE cycle_test_lookup_ci, seq INTEGER)');
+        $db->execute("INSERT INTO cycle_test_lookup VALUES ('abc', 1), ('ABC', 2), ('é', 3), ('e', 4)");
+        $keys = ['abc', 'ABC', 'Abc', 'é', "e\u{0301}", 'E', 'e', ...array_map('strval', range(10, 40))];
+        $expected = [];
+        foreach ($keys as $key) {
+            $matches = $db->select('seq')->from('cycle_test_lookup')
+                ->where('lookup_key', '=', new Parameter($key))->fetchAll();
+            $values = array_map(static fn (array $row): int => (int) $row['seq'], $matches);
+            sort($values);
+            $expected[] = $values;
+        }
+        expect($expected[0])->toBe([1, 2]);
+        expect($expected[4])->toBe([3]);
+        $fetcher = new RelationLookupOracleFetcher($db, false);
+        expect($fetcher($keys))->toBe($expected);
+        expect($fetcher($keys))->toBe($expected);
+    } finally {
+        $db->execute('DROP TABLE IF EXISTS cycle_test_lookup');
+        $db->execute('DROP COLLATION IF EXISTS cycle_test_lookup_ci');
+    }
+});
+
+it('groups MySQL zerofill integer keys with stringified PDO results', function (): void {
+    if (getenv('CYCLE_TEST_DB_DRIVER') !== 'mysql') {
+        \PHPUnit\Framework\Assert::markTestSkipped('MySQL zerofill representation.');
+    }
+    $db = new \Cycle\Database\Database('zerofill-test', '', \Cycle\Database\Driver\MySQL\MySQLDriver::create(
+        new \Cycle\Database\Config\MySQLDriverConfig(
+            new \Cycle\Database\Config\MySQL\TcpConnectionConfig(
+                database: getenv('CYCLE_TEST_DB_NAME') ?: 'cycle_tests',
+                host: getenv('CYCLE_TEST_DB_HOST') ?: '127.0.0.1',
+                port: (int) (getenv('CYCLE_TEST_DB_PORT') ?: 3306),
+                user: getenv('CYCLE_TEST_DB_USER') ?: 'root',
+                password: getenv('CYCLE_TEST_DB_PASSWORD') ?: '',
+                options: [\PDO::ATTR_STRINGIFY_FETCHES => true, \PDO::ATTR_EMULATE_PREPARES => false],
+            ),
+            queryCache: false,
+        ),
+    ));
+    try {
+        $db->execute('CREATE TABLE cycle_test_lookup (lookup_key INT(10) ZEROFILL, seq INTEGER)');
+        $db->execute('INSERT INTO cycle_test_lookup VALUES (0, 10), (1, 11), (2, 12), (4294967295, 13)');
+        $keys = [0, 1, 2, 4294967295, ...range(10, 40)];
+        $expected = [[10], [11], [12], [13], ...array_fill(0, 31, [])];
+        $fetcher = new RelationLookupOracleFetcher($db, false);
+        expect($fetcher($keys))->toBe($expected);
+        expect($fetcher($keys))->toBe($expected);
+    } finally {
+        $db->execute('DROP TABLE IF EXISTS cycle_test_lookup');
+        $db->getDriver()->disconnect();
+    }
+});
