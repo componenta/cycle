@@ -558,3 +558,68 @@ it('groups MySQL zerofill integer keys with stringified PDO results', function (
         $db->getDriver()->disconnect();
     }
 });
+
+
+it('preserves MySQL PAD SPACE and NO PAD comparisons across the batch threshold', function (string $type, string $collation): void {
+    $db = relationEqualityDatabase();
+    if ($db->getType() !== 'MySQL') {
+        \PHPUnit\Framework\Assert::markTestSkipped('MySQL collation padding rules.');
+    }
+    try {
+        $db->execute("CREATE TABLE cycle_test_lookup (lookup_key $type CHARACTER SET utf8mb4 COLLATE $collation, seq INTEGER)");
+        $db->execute('CREATE INDEX cycle_test_lookup_idx ON cycle_test_lookup(lookup_key)');
+        $stored = ['abc', 'abc ', 'abc  ', 'ABC', '', ' ', 'a', "a\t", "a\n", 'é', "e\u{0301}"];
+        foreach ($stored as $index => $value) {
+            $db->execute('INSERT INTO cycle_test_lookup VALUES (?, ?)', [new Parameter($value), new Parameter($index + 1)]);
+        }
+        $keys = [...$stored, 'Abc', 'abc   ', '  ', "a\r", ...array_map('strval', range(1, 40))];
+        $expected = [];
+        foreach ($keys as $key) {
+            $matches = $db->select('seq')->from('cycle_test_lookup')
+                ->where('lookup_key', '=', new Parameter($key))->fetchAll();
+            $values = array_map(static fn (array $row): int => (int) $row['seq'], $matches);
+            sort($values);
+            $expected[] = $values;
+        }
+        $fetcher = new RelationLookupOracleFetcher($db, false);
+        expect($fetcher(array_slice($keys, 0, 10)))->toBe(array_slice($expected, 0, 10));
+        expect($fetcher($keys))->toBe($expected);
+        expect($fetcher($keys))->toBe($expected);
+    } finally {
+        $db->execute('DROP TABLE IF EXISTS cycle_test_lookup');
+    }
+})->with([
+    'varying PAD SPACE' => ['VARCHAR(64)', 'utf8mb4_unicode_ci'],
+    'varying NO PAD' => ['VARCHAR(64)', 'utf8mb4_0900_ai_ci'],
+    'fixed NO PAD' => ['CHAR(64)', 'utf8mb4_0900_ai_ci'],
+]);
+
+it('preserves SQL Server Unicode control characters and supplementary characters across the batch threshold', function (): void {
+    $db = relationEqualityDatabase();
+    if ($db->getType() !== 'SQLServer') {
+        \PHPUnit\Framework\Assert::markTestSkipped('SQL Server JSON Unicode comparison.');
+    }
+    try {
+        $db->execute('CREATE TABLE cycle_test_lookup (lookup_key NVARCHAR(256) COLLATE Latin1_General_100_BIN2, seq INTEGER)');
+        $db->execute('CREATE INDEX cycle_test_lookup_idx ON cycle_test_lookup(lookup_key)');
+        $stored = ['a', "a\0", "a\0b", "a\t", "a\r\n", "a\n", '"', '\\', '😀', '𐐀', 'é', "e\u{0301}", '', ' '];
+        foreach ($stored as $index => $value) {
+            $db->execute('INSERT INTO cycle_test_lookup VALUES (?, ?)', [new Parameter($value), new Parameter($index + 1)]);
+        }
+        $keys = [...$stored, "a\0c", "a  ", ...array_map('strval', range(1, 40))];
+        $expected = [];
+        foreach ($keys as $key) {
+            $matches = $db->select('seq')->from('cycle_test_lookup')
+                ->where('lookup_key', '=', new Parameter($key))->fetchAll();
+            $values = array_map(static fn (array $row): int => (int) $row['seq'], $matches);
+            sort($values);
+            $expected[] = $values;
+        }
+        $fetcher = new RelationLookupOracleFetcher($db, false);
+        expect($fetcher(array_slice($keys, 0, 10)))->toBe(array_slice($expected, 0, 10));
+        expect($fetcher($keys))->toBe($expected);
+        expect($fetcher($keys))->toBe($expected);
+    } finally {
+        $db->execute('DROP TABLE IF EXISTS cycle_test_lookup');
+    }
+});
