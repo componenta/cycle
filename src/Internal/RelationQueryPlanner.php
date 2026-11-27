@@ -44,7 +44,7 @@ final readonly class RelationQueryPlanner
             : null;
         $sqlServerSeed = $plan !== null && $driver->getType() === 'SQLServer' && count($ids) >= 16
             && self::uniformKeys($ids)
-            ? $this->typedSeed($plan, $driver, $prefix)
+            ? $this->typedSeed($plan, $driver, $prefix, true)
             : null;
         $mysqlPlan = $plan !== null && $driver->getType() === 'MySQL' && count($ids) >= 16
             ? $this->mysqlPlan($plan, $driver, $prefix, $ids, $binary)
@@ -220,9 +220,12 @@ final readonly class RelationQueryPlanner
      *
      * @param array{table: string, columns: list<string>, key: string, keyTable: string, keyColumn: string, alias: string, tableName: string, pivotForeignKey: ?string, relatedKey: ?string} $plan
      */
-    private function typedSeed(array $plan, DriverInterface $driver, string $prefix): string
+    private function typedSeed(array $plan, DriverInterface $driver, string $prefix, bool $ordinal = false): string
     {
-        $seed = $this->db->select([$plan['keyColumn']])
+        $columns = $ordinal
+            ? [$plan['keyColumn'] . ' AS componenta_value', new Fragment('-1 AS componenta_ordinal')]
+            : [$plan['keyColumn']];
+        $seed = $this->db->select($columns)
             ->from($plan['keyTable'])
             ->where(new Fragment('1 = 0'));
         return $driver->getQueryCompiler()->compile(new QueryParameters(), $prefix, $seed);
@@ -336,7 +339,7 @@ final readonly class RelationQueryPlanner
     }
 
     /**
-     * SQL Server uses a typed VALUES relation. Modern MySQL uses one JSON
+     * SQL Server uses an empty typed SELECT and constant arms. Modern MySQL uses one JSON
      * parameter for integers and short binary keys; the older-server and
      * text paths use a derived relation of individual bound values.
      *
@@ -358,13 +361,15 @@ final readonly class RelationQueryPlanner
         $key = $compiler->quoteIdentifier($plan['alias'] . '.' . $plan['keyColumn']);
 
         if ($seed !== null) {
-            $rows = ['((' . $seed . '), -1)'];
+            // A scalar subquery in a 500-row VALUES constructor can exhaust
+            // SQL Server's query planner for binary keys. A single empty
+            // typed SELECT followed by constant arms avoids that expansion.
+            $arms = [$seed];
             foreach ($bindings as $index => $parameter) {
-                $rows[] = '(?, ' . $index . ')';
+                $arms[] = 'SELECT ? AS componenta_value, ' . $index . ' AS componenta_ordinal';
             }
             $keys = new Fragment(
-                '(VALUES ' . implode(', ', $rows) . ') AS ' . $alias
-                    . '(componenta_value, componenta_ordinal)',
+                '(' . implode("\nUNION ALL\n", $arms) . ') AS ' . $alias,
                 ...array_values($bindings),
             );
             $ordinalFilter = new Fragment($ordinal . ' >= 0');
