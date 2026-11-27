@@ -155,7 +155,14 @@ final readonly class RelationLoader
                 throw new InvalidArgumentException('A relation key must be a scalar or a seekable stream.');
             }
 
-            $identity = is_int($id) ? $id : (is_string($id) ? 's:' . $id : serialize($id));
+            // Serialization of a float depends on serialize_precision and
+            // may collapse distinct database parameters into one ordinal.
+            $identity = match (true) {
+                is_int($id) => $id,
+                is_string($id) => 's:' . $id,
+                is_float($id) => 'f:' . pack('E', $id),
+                default => $id ? 'b:1' : 'b:0',
+            };
             if (!isset($seen[$identity])) {
                 $seen[$identity] = count($ids);
                 $ids[] = $id;
