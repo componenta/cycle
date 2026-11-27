@@ -120,3 +120,27 @@ it('rejects invalid calendar dates', function (array $date): void {
     yield [['dates' => ['bad' => '2025-02-05']]];
     yield [['from' => 123]];
 });
+
+
+it('includes the complete last four-digit calendar date without overflowing the SQL date range', function (bool $withLowerBound): void {
+    $db = calendarFilterDatabase();
+    $type = match ($db->getType()) {
+        'SQLServer' => 'DATETIME2(7)',
+        'Postgres' => 'TIMESTAMP(6)',
+        'MySQL' => 'DATETIME(6)',
+        default => 'TEXT',
+    };
+    $bounds = ['to' => '9999-12-31'];
+    if ($withLowerBound) {
+        $bounds['from'] = '9999-12-31';
+    }
+    $query = $db->select('id')->from(new Fragment(
+        "(SELECT 1 AS id, CAST('9999-12-30 23:59:59' AS $type) AS created_at "
+        . "UNION ALL SELECT 2, CAST('9999-12-31 00:00:00' AS $type) "
+        . "UNION ALL SELECT 3, CAST('9999-12-31 23:59:59.999999' AS $type) "
+        . "UNION ALL SELECT 4, CAST(NULL AS $type)) AS items",
+    ))->orderBy('id');
+    $rows = (new DateFilter($bounds))->apply($query)->fetchAll();
+    expect(array_map('intval', array_column($rows, 'id')))
+        ->toBe($withLowerBound ? [2, 3] : [1, 2, 3]);
+})->with([true, false]);
