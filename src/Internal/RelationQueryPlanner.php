@@ -39,8 +39,8 @@ final readonly class RelationQueryPlanner
         $compiler = $driver->getQueryCompiler();
         $prefix = $base->getPrefix() ?? '';
         $projection = self::groupProjection($base, $driver);
-        $postgresSeed = $plan !== null && $driver->getType() === 'Postgres'
-            ? $this->typedSeed($plan, $driver, $prefix)
+        $postgresSeed = $plan !== null && $driver->getType() === 'Postgres' && count($ids) >= 16
+            ? $this->postgresSeed($plan, $driver, $prefix)
             : null;
         $sqlServerSeed = $plan !== null && $driver->getType() === 'SQLServer' && count($ids) >= 16
             && self::uniformKeys($ids)
@@ -231,6 +231,31 @@ final readonly class RelationQueryPlanner
         return $driver->getQueryCompiler()->compile(new QueryParameters(), $prefix, $seed);
     }
 
+    /**
+     * An array constructor can erase a domain type, changing operator
+     * resolution. Only optimize supported built-in scalar types, including
+     * when a temporary table shadows the original source. Inspect the type
+     * of the actual scalar subquery, not a cached catalog table name.
+     */
+    private function postgresSeed(array $plan, DriverInterface $driver, string $prefix): ?string
+    {
+        $seed = $this->typedSeed($plan, $driver, $prefix);
+        $statement = $driver->query(
+            'SELECT t.typname FROM pg_catalog.pg_type t'
+                . ' JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace'
+                . " WHERE n.nspname = 'pg_catalog' AND t.oid = pg_catalog.pg_typeof((" . $seed . '))::oid',
+        );
+        try {
+            $row = $statement->fetch();
+        } finally {
+            $statement->close();
+        }
+
+        return $row !== false && in_array($row['typname'], [
+            'int2', 'int4', 'int8', 'text', 'varchar', 'bpchar', 'bytea', 'uuid',
+        ], true) ? $seed : null;
+    }
+
     /** @param array<int, Parameter> $bindings */
     private static function postgresQuery(SelectQuery $base, array $plan, array $bindings, string $seed): SelectQuery
     {
@@ -281,36 +306,34 @@ final readonly class RelationQueryPlanner
         if (!self::uniformKeys($ids)) {
             return null;
         }
-        $statement = $driver->query(
-            'SELECT VERSION() AS server_version, DATA_TYPE AS data_type,'
-                . ' CHARACTER_SET_NAME AS character_set_name, COLLATION_NAME AS collation_name'
-                . ' FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE()'
-                . ' AND TABLE_NAME = ? AND COLUMN_NAME = ?',
-            [new Parameter($prefix . $plan['keyTable']), new Parameter($plan['keyColumn'])],
-        );
+        // SHOW resolves temporary tables on this connection as well as
+        // permanent ones. INFORMATION_SCHEMA.COLUMNS does not see them.
+        $table = $driver->getQueryCompiler()->quoteIdentifier($prefix . $plan['keyTable']);
+        $statement = $driver->query('SHOW FULL COLUMNS FROM ' . $table);
+        $column = null;
         try {
-            $column = $statement->fetch();
+            while (($row = $statement->fetch()) !== false) {
+                if (strcasecmp($row['Field'], $plan['keyColumn']) === 0) {
+                    $column = $row;
+                    break;
+                }
+            }
         } finally {
             $statement->close();
         }
-        if ($column === false) {
+        if ($column === null || preg_match('/\A([a-z]+)/i', $column['Type'], $matches) !== 1) {
             return null;
         }
-        $version = $column['server_version'];
-        $json = is_string($version) && stripos($version, 'MariaDB') === false
-            && preg_match('/\A(\d+\.\d+\.\d+)/', $version, $matches) === 1
-            && version_compare($matches[1], '8.0.4', '>=');
-        $type = strtolower($column['data_type']);
+        $type = strtolower($matches[1]);
 
         if (in_array($type, ['binary', 'varbinary', 'tinyblob', 'blob', 'mediumblob', 'longblob'], true)
             && is_string($ids[0])) {
             foreach ($ids as $id) {
                 if (strlen($id) > 256) {
-                    $json = false;
-                    break;
+                    return ['cast' => 'CAST(? AS BINARY)', 'json' => null];
                 }
             }
-            return ['cast' => 'CAST(? AS BINARY)', 'json' => $json ? 'binary' : null];
+            return ['cast' => 'CAST(? AS BINARY)', 'json' => self::mysqlJsonSupported($driver) ? 'binary' : null];
         }
         if ($binary) {
             // An explicit LOB binding must not become a text parameter.
@@ -318,16 +341,15 @@ final readonly class RelationQueryPlanner
         }
         if (in_array($type, ['tinyint', 'smallint', 'mediumint', 'int', 'bigint'], true)
             && is_int($ids[0])) {
-            return ['cast' => 'CAST(? AS SIGNED)', 'json' => $json ? 'integer' : null];
+            return ['cast' => 'CAST(? AS SIGNED)', 'json' => self::mysqlJsonSupported($driver) ? 'integer' : null];
         }
         if (!is_string($ids[0]) || !in_array($type, ['char', 'varchar', 'tinytext', 'text', 'mediumtext', 'longtext'], true)) {
             return null;
         }
-        $charset = $column['character_set_name'];
-        $collation = $column['collation_name'];
+        $collation = $column['Collation'];
         // A conversion to a narrower charset can replace input characters
         // with '?'. Retain the original comparison in that case.
-        if ($charset !== 'utf8mb4' || !is_string($collation) || !self::simpleIdentifier($collation)) {
+        if (!is_string($collation) || !str_starts_with($collation, 'utf8mb4_') || !self::simpleIdentifier($collation)) {
             return null;
         }
         foreach ($ids as $id) {
@@ -336,6 +358,21 @@ final readonly class RelationQueryPlanner
             }
         }
         return ['cast' => 'CAST(? AS CHAR CHARACTER SET utf8mb4) COLLATE ' . $collation, 'json' => null];
+    }
+
+    private static function mysqlJsonSupported(DriverInterface $driver): bool
+    {
+        $statement = $driver->query('SELECT VERSION() AS server_version');
+        try {
+            $row = $statement->fetch();
+        } finally {
+            $statement->close();
+        }
+        $version = $row === false ? null : $row['server_version'];
+
+        return is_string($version) && stripos($version, 'MariaDB') === false
+            && preg_match('/\A(\d+\.\d+\.\d+)/', $version, $matches) === 1
+            && version_compare($matches[1], '8.0.4', '>=');
     }
 
     /**

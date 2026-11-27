@@ -45,7 +45,7 @@ Use repositories for aggregate persistence and identity-based lookups. Keep busi
 
 Fetcher methods transform database rows into arrays or projection objects. Relation loading is batched after rows are collected, so fetchers can avoid N+1 queries.
 
-Relation keys are compared by the database, including its collation and type-affinity rules. Distinct requested keys retain separate result groups even when the database considers them equivalent. Each batch contains at most 500 keys and is reduced further when the compiled projection requires more bound parameters. For simple SQLite projections, a joined VALUES table avoids compound SELECT planning. Other projections and drivers use bounded, parameterized compound SELECTs.
+Relation keys are compared by the database, including its collation and type-affinity rules. Distinct requested keys retain separate result groups even when the database considers them equivalent. Each batch contains at most 500 keys and is reduced further when the compiled projection requires more bound parameters. Simple projections can use native key-table joins: indexed VALUES lookups on SQLite, typed arrays on PostgreSQL, derived keys or JSON_TABLE on MySQL, and typed constant unions on SQL Server. The planner inspects live column types when needed; small batches, unsupported types, and complex projections use bounded, parameterized compound SELECTs. Custom database equality, including PostgreSQL domain operators and temporary-table collations, must remain equivalent to individual lookups.
 
 ## Query Contracts
 

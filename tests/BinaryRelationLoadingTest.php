@@ -115,7 +115,7 @@ it('binary keys load all three relation types', function (bool $explicitBinary, 
 
             public function log($level, $message, array $context = []): void
             {
-                if ($level === \Psr\Log\LogLevel::INFO && str_starts_with(ltrim((string) $message), 'SELECT')) {
+                if ($level === \Psr\Log\LogLevel::INFO && preg_match('/\A(?:SELECT|SHOW)\b/i', ltrim((string) $message)) === 1) {
                     ++$this->reads;
                 }
             }
@@ -125,8 +125,12 @@ it('binary keys load all three relation types', function (bool $explicitBinary, 
         $rows = (new BinaryRelationsFetcher($db, $explicitBinary))();
 
         expect($rows)->toBe($expected);
-        // MySQL inspects the target column and server version once per relation.
-        $metadataReads = $additionalKeys > 0 && $db->getType() === 'MySQL' ? 3 : 0;
+        // Metadata probes are scoped to each large relation, not each key.
+        $metadataReads = $additionalKeys === 0 ? 0 : match ($db->getType()) {
+            'MySQL' => 6,
+            'Postgres' => 3,
+            default => 0,
+        };
         expect($logger->reads)->toBe(($additionalKeys === 0 ? 4 : 7) + $metadataReads);
     } finally {
         foreach (['cycle_test_binary_pivot', 'cycle_test_binary_tags', 'cycle_test_binary_children',
