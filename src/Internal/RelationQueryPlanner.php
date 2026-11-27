@@ -91,8 +91,8 @@ final readonly class RelationQueryPlanner
                 continue;
             }
 
-            if ($sqlServerPlan === 'sqlserver-json-binary') {
-                $query = self::sqlServerBinaryQuery($base, $plan, $bindings, $driver);
+            if ($sqlServerPlan === 'sqlserver-json-binary' || is_array($sqlServerPlan)) {
+                $query = self::sqlServerJsonQuery($base, $plan, $bindings, $driver, $sqlServerPlan);
                 $parameters = new QueryParameters();
                 $sql = $compiler->compile($parameters, $prefix, $query);
                 yield [$sql, $parameters->getParameters(), null];
@@ -567,20 +567,27 @@ final readonly class RelationQueryPlanner
         string $prefix,
         array $ids,
         bool $binary,
-    ): ?string {
+    ): string|array|null {
+        $integer = !$binary && ExactRelationLookup::integerKeys($ids, [PHP_INT_MIN, PHP_INT_MAX], true);
         if ($binary) {
             foreach ($ids as $id) {
                 if (!is_string($id) || strlen($id) > 32) {
                     return null;
                 }
             }
-        } elseif (!ExactRelationLookup::integerKeys($ids, [PHP_INT_MIN, PHP_INT_MAX], true)) {
-            return null;
+        } elseif (!$integer) {
+            // JSON carries text in Unicode. Admit only valid, bounded
+            // strings; keep the original binding path for other scalars.
+            foreach ($ids as $id) {
+                if (!is_string($id) || strlen($id) > 4000 || preg_match('//u', $id) !== 1) {
+                    return null;
+                }
+            }
         }
 
         $table = $driver->getQueryCompiler()->quoteIdentifier($prefix . $plan['keyTable']);
         $statement = $driver->query(
-            'SELECT t.name AS type_name, d.compatibility_level'
+            'SELECT t.name AS type_name, c.collation_name, d.compatibility_level'
                 . ' FROM sys.columns c JOIN sys.types t ON t.user_type_id = c.user_type_id'
                 . ' CROSS JOIN sys.databases d'
                 . " WHERE c.object_id = OBJECT_ID(?, 'U') AND c.name = ?"
@@ -607,6 +614,29 @@ final readonly class RelationQueryPlanner
                 : null;
         }
 
+        if (!$integer && (int) $row['compatibility_level'] >= 130) {
+            $collation = $row['collation_name'];
+            if (!is_string($collation) || !self::simpleIdentifier($collation)) {
+                return null;
+            }
+            if (in_array($type, ['nvarchar', 'nchar'], true)) {
+                return ['type' => 'nvarchar(4000)', 'collation' => $collation];
+            }
+            // For ANSI text, only admit ASCII input under the tested
+            // Windows linguistic collation family. SQL collations and
+            // non-ASCII input can have different Unicode/ANSI semantics.
+            if (in_array($type, ['varchar', 'char'], true)
+                && preg_match('/\ALatin1_General_100_(?:CI|CS)_(?:AI|AS)\z/', $collation) === 1) {
+                foreach ($ids as $id) {
+                    if (preg_match('/[^\x20-\x7e]/', $id) === 1) {
+                        return null;
+                    }
+                }
+                return ['type' => 'varchar(4000)', 'collation' => $collation];
+            }
+            return null;
+        }
+
         return ExactRelationLookup::integerKeys($ids, match ($type) {
             'tinyint' => [0, 255],
             'smallint' => [-32768, 32767],
@@ -617,16 +647,20 @@ final readonly class RelationQueryPlanner
     }
 
     /** @param array<int, Parameter> $bindings */
-    private static function sqlServerBinaryQuery(
+    private static function sqlServerJsonQuery(
         SelectQuery $base,
         array $plan,
         array $bindings,
         DriverInterface $driver,
+        string|array $lookup,
     ): SelectQuery {
         $compiler = $driver->getQueryCompiler();
         $column = $compiler->quoteIdentifier($plan['alias'] . '.' . $plan['keyColumn']);
+        $binary = $lookup === 'sqlserver-json-binary';
         $values = array_map(
-            static fn (Parameter $parameter): string => bin2hex($parameter->getValue()),
+            static fn (Parameter $parameter): string => $binary
+                ? bin2hex($parameter->getValue())
+                : $parameter->getValue(),
             array_values($bindings),
         );
         $keys = new Fragment(
@@ -634,10 +668,14 @@ final readonly class RelationQueryPlanner
             json_encode($values, JSON_THROW_ON_ERROR),
         );
         $ordinal = 'CONVERT(int, [_componenta_keys].[key]) + ' . array_key_first($bindings);
+        $value = $binary
+            ? 'CONVERT(varbinary(max), [_componenta_keys].[value], 2)'
+            : 'CONVERT(' . $lookup['type'] . ', [_componenta_keys].[value] COLLATE '
+                . $lookup['collation'] . ') COLLATE ' . $lookup['collation'];
         return (clone $base)
             ->from([$keys, $plan['table']])
             ->columns([new Fragment($ordinal), ...$plan['columns']])
-            ->where(new Fragment($column . ' = CONVERT(varbinary(max), [_componenta_keys].[value], 2)'));
+            ->where(new Fragment($column . ' = ' . $value));
     }
 
     /**

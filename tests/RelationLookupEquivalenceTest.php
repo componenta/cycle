@@ -398,3 +398,42 @@ it('retains a shadowed PostgreSQL integer equality operator', function (): void 
         $db->execute('DROP SCHEMA IF EXISTS cycle_test_lookup_schema CASCADE');
     }
 });
+
+
+it('matches SQL Server collated text against individual predicates including ANSI and Unicode', function (string $type, string $collation, bool $unicodeKeys): void {
+    $db = relationEqualityDatabase();
+    if ($db->getType() !== 'SQLServer') {
+        \PHPUnit\Framework\Assert::markTestSkipped('SQL Server text comparison.');
+    }
+    try {
+        $db->execute("CREATE TABLE cycle_test_lookup (lookup_key $type COLLATE $collation, seq INTEGER)");
+        $db->execute('CREATE INDEX cycle_test_lookup_idx ON cycle_test_lookup(lookup_key)');
+        $stored = ['abc', 'ABC', 'abc ', 'a', 'A', 'á', 'é', 'e', 'å', 'a-b', 'a b', '0', '00', '', ' ', 'x"y', "x\\y", "x'y"];
+        foreach ($stored as $index => $value) {
+            $db->execute('INSERT INTO cycle_test_lookup VALUES (?, ?)', [new Parameter($value), new Parameter($index + 1)]);
+        }
+        $keys = ['abc', 'ABC', 'Abc', 'abc  ', 'a', 'A', 'e', 'E', '0', '00', '', ' ', 'a-b', 'a b', 'x"y', "x\\y", "x'y", ...array_map('strval', range(10, 32))];
+        if ($unicodeKeys) {
+            array_push($keys, 'á', 'é', 'Å', 'å', '😀');
+        }
+        $expected = [];
+        foreach ($keys as $key) {
+            $rows = $db->select('seq')->from('cycle_test_lookup')->where('lookup_key', '=', new Parameter($key))->fetchAll();
+            $values = array_map(static fn (array $row): int => (int) $row['seq'], $rows);
+            sort($values);
+            $expected[] = $values;
+        }
+        $fetcher = new RelationLookupOracleFetcher($db, false);
+        expect($fetcher($keys))->toBe($expected);
+        expect($fetcher($keys))->toBe($expected);
+    } finally {
+        $db->execute('DROP TABLE IF EXISTS cycle_test_lookup');
+    }
+})->with([
+    'ANSI case insensitive' => ['VARCHAR(64)', 'Latin1_General_100_CI_AS', false],
+    'ANSI accent insensitive' => ['VARCHAR(64)', 'Latin1_General_100_CI_AI', false],
+    'ANSI non-ASCII fallback' => ['VARCHAR(64)', 'Latin1_General_100_CI_AS', true],
+    'Unicode case insensitive' => ['NVARCHAR(64)', 'Latin1_General_100_CI_AS', true],
+    'Unicode binary' => ['NVARCHAR(64)', 'Latin1_General_100_BIN2', true],
+    'SQL collation fallback' => ['VARCHAR(64)', 'SQL_Latin1_General_CP1_CI_AS', false],
+]);
