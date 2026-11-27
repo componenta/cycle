@@ -90,8 +90,11 @@ final class HydrationChild
 /** Numeric and binary keys share the same indexed workload. */
 final class DatabaseRelationFetcher extends DataFetcher
 {
-    public function __construct(\Cycle\Database\DatabaseInterface $db, private readonly bool $binary)
-    {
+    public function __construct(
+        \Cycle\Database\DatabaseInterface $db,
+        private readonly bool $binary,
+        private readonly bool $boundProjection = false,
+    ) {
         parent::__construct($db);
     }
 
@@ -117,10 +120,13 @@ final class DatabaseRelationFetcher extends DataFetcher
 
     protected function loadRelations(array &$results, array $rows, ?object $query): void
     {
+        $columns = $this->boundProjection
+            ? [new \Cycle\Database\Injection\Fragment('seq + ? AS seq', new \Cycle\Database\Injection\Parameter(0))]
+            : ['*'];
         $this->batchBelongsTo($results, $rows, 'owner_id', 'cycle_bench_owners',
-            transform: static fn (array $row): int => (int) $row['seq']);
+            columns: $columns, transform: static fn (array $row): int => (int) $row['seq']);
         $this->batchHasMany($results, $rows, 'children', 'cycle_bench_children', 'root_id',
-            transform: static fn (array $row): int => (int) $row['seq']);
+            columns: $columns, transform: static fn (array $row): int => (int) $row['seq']);
         $this->batchBelongsToMany($results, $rows, 'tags', 'cycle_bench_tags', 'cycle_bench_pivot',
             'root_id', 'tag_id', transform: static fn (array $row): int => (int) $row['seq']);
     }

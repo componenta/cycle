@@ -6,7 +6,7 @@ on:
       baseline:
         description: Compatible source revision for comparison
         required: false
-        default: '5a6065ad5f1ce7f47b2778a831008403ad27449e'
+        default: '3765c13658e0b2d6ef396ec1ba5e69d4bab465a4'
   push:
     paths:
       - 'src/**'
@@ -22,7 +22,7 @@ jobs:
   compare:
     runs-on: ubuntu-latest
     env:
-      BENCH_BASELINE: ${{ inputs.baseline || '5a6065ad5f1ce7f47b2778a831008403ad27449e' }}
+      BENCH_BASELINE: ${{ inputs.baseline || '3765c13658e0b2d6ef396ec1ba5e69d4bab465a4' }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -66,7 +66,7 @@ jobs:
           --health-timeout=5s
           --health-retries=10
     env:
-      BENCH_BASELINE: ${{ inputs.baseline || '5a6065ad5f1ce7f47b2778a831008403ad27449e' }}
+      BENCH_BASELINE: ${{ inputs.baseline || '3765c13658e0b2d6ef396ec1ba5e69d4bab465a4' }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -117,7 +117,7 @@ jobs:
           --health-timeout=5s
           --health-retries=10
     env:
-      BENCH_BASELINE: ${{ inputs.baseline || '5a6065ad5f1ce7f47b2778a831008403ad27449e' }}
+      BENCH_BASELINE: ${{ inputs.baseline || '3765c13658e0b2d6ef396ec1ba5e69d4bab465a4' }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -164,7 +164,7 @@ jobs:
         ports:
           - 1433:1433
     env:
-      BENCH_BASELINE: ${{ inputs.baseline || '5a6065ad5f1ce7f47b2778a831008403ad27449e' }}
+      BENCH_BASELINE: ${{ inputs.baseline || '3765c13658e0b2d6ef396ec1ba5e69d4bab465a4' }}
     steps:
       - uses: actions/checkout@v7
         with:
