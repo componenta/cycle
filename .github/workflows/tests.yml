@@ -24,7 +24,12 @@ jobs:
           tools: composer:v2
       - run: composer validate --strict
       - run: composer install --no-interaction --prefer-dist
-      - run: composer audit --locked --no-interaction
+      - name: Audit production dependencies
+        run: composer audit --locked --no-dev --abandoned=fail --no-interaction
+      # PHPBench 1.7 uses doctrine/annotations only in the development graph.
+      # Report abandoned development packages, but fail on every advisory.
+      - name: Audit complete development dependencies
+        run: composer audit --locked --abandoned=report --no-interaction
       - run: find src tests -name '*.php' -print0 | xargs -0 -n1 php -l
       - run: composer test
 
@@ -39,7 +44,12 @@ jobs:
           coverage: none
           tools: composer:v2
       - run: composer update --prefer-lowest --prefer-stable --no-interaction --prefer-dist
-      - run: composer audit --locked --no-interaction
+      - name: Audit production dependencies
+        run: composer audit --locked --no-dev --abandoned=fail --no-interaction
+      # PHPBench 1.7 uses doctrine/annotations only in the development graph.
+      # Report abandoned development packages, but fail on every advisory.
+      - name: Audit complete development dependencies
+        run: composer audit --locked --abandoned=report --no-interaction
       - run: composer show --direct
       - run: composer test -- --display-deprecations --display-phpunit-deprecations --fail-on-deprecation --fail-on-phpunit-deprecation
 
