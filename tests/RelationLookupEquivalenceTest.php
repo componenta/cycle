@@ -294,3 +294,75 @@ it('does not require the default PDO column name case for MySQL metadata', funct
         $db->getDriver()->disconnect();
     }
 });
+
+
+it('loads bound projection expressions from a MySQL temporary table across batches without repeating transforms', function (): void {
+    $db = relationEqualityDatabase();
+    if ($db->getType() !== 'MySQL') {
+        \PHPUnit\Framework\Assert::markTestSkipped('MySQL temporary table reopening limitation.');
+    }
+    try {
+        $db->execute('CREATE TEMPORARY TABLE cycle_test_lookup (lookup_key INTEGER, seq INTEGER)');
+        $db->execute('INSERT INTO cycle_test_lookup VALUES (1, 10), (2, 20), (501, 30)');
+        $fetcher = new BoundTemporaryRelationFetcher($db);
+        $keys = [...range(1, 501), 1, null];
+        $expected = [[17], [27], ...array_fill(0, 498, []), [37], [17], []];
+        expect($fetcher($keys))->toBe($expected);
+        expect($fetcher->transforms)->toBe(3);
+        expect($fetcher([501, 2, null]))->toBe([[37], [27], []]);
+        expect($fetcher->transforms)->toBe(5);
+    } finally {
+        $db->execute('DROP TEMPORARY TABLE IF EXISTS cycle_test_lookup');
+    }
+});
+
+final class BoundTemporaryRelationFetcher extends DataFetcher
+{
+    public int $transforms = 0;
+
+    public function __invoke(array $keys): array
+    {
+        $rows = array_map(static fn (mixed $key): array => ['id' => $key], $keys);
+        return array_column($this->fetchResults($rows, null, null), 'matches');
+    }
+
+    protected function loadRelations(array &$results, array $rows, ?object $query): void
+    {
+        $this->batchHasMany(
+            $results, $rows, 'matches', 'cycle_test_lookup', 'lookup_key',
+            columns: [new \Cycle\Database\Injection\Fragment('seq + ? AS computed', new Parameter(7))],
+            transform: function (array $row): int {
+                ++$this->transforms;
+                return (int) $row['computed'];
+            },
+        );
+    }
+}
+
+it('retains a shadowed PostgreSQL integer equality operator', function (): void {
+    $db = relationEqualityDatabase();
+    if ($db->getType() !== 'Postgres') {
+        \PHPUnit\Framework\Assert::markTestSkipped('PostgreSQL operator visibility.');
+    }
+    try {
+        $db->execute('CREATE SCHEMA cycle_test_lookup_schema');
+        $db->execute("CREATE FUNCTION cycle_test_lookup_schema.equal_int(INTEGER, INTEGER) RETURNS boolean LANGUAGE SQL IMMUTABLE AS 'SELECT abs($1) OPERATOR(pg_catalog.=) abs($2)'");
+        $db->execute('CREATE OPERATOR cycle_test_lookup_schema.= (LEFTARG = INTEGER, RIGHTARG = INTEGER, FUNCTION = cycle_test_lookup_schema.equal_int)');
+        $db->execute('CREATE TABLE cycle_test_lookup (lookup_key INTEGER, seq INTEGER)');
+        $db->execute('INSERT INTO cycle_test_lookup VALUES (1, 1), (-1, 2)');
+        $db->execute('SET search_path TO cycle_test_lookup_schema, pg_catalog, public');
+        $keys = [1, -1, ...range(10, 40)];
+        $fetcher = new RelationLookupOracleFetcher($db, false);
+        $expected = [[1, 2], [1, 2], ...array_fill(0, 31, [])];
+        $rows = $db->select('seq')->from('cycle_test_lookup')
+            ->where('lookup_key', '=', new Parameter(1))->fetchAll();
+        expect(array_map(static fn (array $row): int => (int) $row['seq'], $rows))
+            ->toEqualCanonicalizing([1, 2]);
+        expect($fetcher($keys))->toBe($expected);
+        expect($fetcher($keys))->toBe($expected);
+    } finally {
+        $db->execute('RESET search_path');
+        $db->execute('DROP TABLE IF EXISTS cycle_test_lookup');
+        $db->execute('DROP SCHEMA IF EXISTS cycle_test_lookup_schema CASCADE');
+    }
+});
