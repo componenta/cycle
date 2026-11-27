@@ -12,7 +12,7 @@ Compare two source revisions on the same machine, using the same current benchma
 
 ```sh
 baseline=$(mktemp -d)
-git archive 9f750218e39861e61f419089c3f7e3b730de9e11 src | tar -x -C "$baseline"
+git archive 5a6065ad5f1ce7f47b2778a831008403ad27449e src | tar -x -C "$baseline"
 CYCLE_BENCH_SOURCE_ROOT="$baseline/src" composer bench
 composer bench
 rm -rf "$baseline"
