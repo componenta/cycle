@@ -217,7 +217,12 @@ abstract class DataFetcher
      */
     protected function snakeToCamel(string $string): string
     {
-        return RowMapper::snakeToCamel($string);
+        // Cache only the pure default conversion, never the result of an
+        // overridden hook or mutable mapping policy. Subclasses may call
+        // this method while constructing themselves, before parent setup.
+        return isset($this->rowMapper)
+            ? $this->rowMapper->mappedName($string)
+            : RowMapper::snakeToCamel($string);
     }
 
     /**

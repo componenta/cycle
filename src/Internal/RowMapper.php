@@ -62,6 +62,12 @@ final class RowMapper
         return $transformed;
     }
 
+    /** Pure default name conversion; also used by the virtual-hook path. */
+    public function mappedName(string $key): string
+    {
+        return $this->names[$key] ?? $this->rememberName($key);
+    }
+
     private function rememberName(string $key): string
     {
         $name = self::snakeToCamel($key);

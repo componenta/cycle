@@ -199,3 +199,52 @@ final class MutableDefaultMappingFetcher extends DataFetcher
         $this->autoMapToCamelCase = $enabled;
     }
 }
+
+it('reuses only default conversions without caching virtual naming decisions', function (): void {
+    $fetcher = new StatefulNamingFetcher($this->createStub(DatabaseInterface::class));
+    expect($fetcher->beforeParent)->toBe('initialName');
+    expect($fetcher(['first_name' => 'Alice', 'other_name' => 1]))->toBe([
+        'firstName_1' => 'ALICE', 'otherName_2' => 1,
+    ]);
+    expect($fetcher(['first_name' => 'Bob']))->toBe(['firstName_3' => 'BOB']);
+    $fetcher->rename('first_name', 'displayName');
+    expect($fetcher(['first_name' => 'Eve']))->toBe(['displayName' => 'EVE']);
+    $fetcher->rename('first_name', null);
+    expect($fetcher(['first_name' => 'Sam']))->toBe(['firstName_4' => 'SAM']);
+});
+
+final class StatefulNamingFetcher extends DataFetcher
+{
+    public string $beforeParent;
+    private int $calls = 0;
+
+    public function __construct(DatabaseInterface $db)
+    {
+        $this->beforeParent = parent::snakeToCamel('initial_name');
+        parent::__construct($db);
+    }
+
+    public function __invoke(array $row): array
+    {
+        return $this->fetchResults([$row], null, null)[0];
+    }
+
+    public function rename(string $from, ?string $to): void
+    {
+        if ($to === null) {
+            unset($this->fieldMapping[$from]);
+        } else {
+            $this->fieldMapping[$from] = $to;
+        }
+    }
+
+    protected function snakeToCamel(string $string): string
+    {
+        return parent::snakeToCamel($string) . '_' . ++$this->calls;
+    }
+
+    protected function mapFirstName(string $value): string
+    {
+        return strtoupper($value);
+    }
+}
