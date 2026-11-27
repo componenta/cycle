@@ -31,8 +31,13 @@ final class RelationDatabaseScaleBench
 
     public function provideKeys(): iterable
     {
-        yield 'integer' => ['text' => false];
-        yield 'collated-text' => ['text' => true];
+        yield 'integer' => ['text' => false, 'binaryText' => false];
+        yield 'collated-text' => ['text' => true, 'binaryText' => false];
+        if (getenv('CYCLE_TEST_DB_DRIVER') === 'mysql') {
+            // ASCII under the configured connection charset is a common
+            // input subset on which both comparison revisions agree.
+            yield 'text-to-binary' => ['text' => true, 'binaryText' => true];
+        }
     }
 
     public function prepare(array $params): void
@@ -50,12 +55,13 @@ final class RelationDatabaseScaleBench
         $this->cleanup();
         $driver = $this->db->getType();
         $text = $params['text'];
-        $type = !$text ? 'INTEGER' : match ($driver) {
+        $binaryText = $params['binaryText'];
+        $type = $binaryText ? 'VARBINARY(32)' : (!$text ? 'INTEGER' : match ($driver) {
             'MySQL' => 'VARCHAR(32) CHARACTER SET latin1 COLLATE latin1_swedish_ci',
             'SQLServer' => 'VARCHAR(32) COLLATE Latin1_General_100_CI_AS',
             'Postgres' => 'VARCHAR(32) COLLATE "C"',
             default => 'TEXT COLLATE NOCASE',
-        };
+        });
         $this->db->execute("CREATE TABLE cycle_bench_scale (seq INTEGER NOT NULL, lookup_key $type NOT NULL)");
         $key = static fn (string $seq): string => !$text ? $seq
             : match ($driver) {
@@ -77,7 +83,7 @@ final class RelationDatabaseScaleBench
             $statement->close();
         }
 
-        $keyPrefix = $driver === 'Postgres' ? 'key_' : 'KEY_';
+        $keyPrefix = $binaryText || $driver === 'Postgres' ? 'key_' : 'KEY_';
         $indices = array_map(static fn (int $i): int => ($i * 61 + 137) % self::ROWS, range(0, 999));
         $this->large = $text ? array_map(static fn (int $i): string => $keyPrefix . $i, $indices) : $indices;
         $this->small = array_slice($this->large, 0, 10);
