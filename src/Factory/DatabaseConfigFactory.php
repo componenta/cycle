@@ -68,8 +68,14 @@ class DatabaseConfigFactory
                 database: $env->string('DB_NAME'),
                 host: $env->string('DB_HOST', '127.0.0.1'),
                 port: $env->int('DB_PORT', 3306),
+                charset: 'utf8mb4',
                 user: $env->string('DB_USER'),
                 password: $env->string('DB_PASSWORD', ''),
+                // DBAL's legacy SET NAMES UTF8 initialization would
+                // override the DSN and discard four-byte Unicode support.
+                // 1002 is PDO MySQL's initialization-command option (also
+                // used by DBAL); avoid the PHP 8.5 deprecated PDO alias.
+                options: [1002 => 'SET NAMES utf8mb4'],
             ),
             queryCache: false,
         );
