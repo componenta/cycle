@@ -64,7 +64,25 @@ final readonly class DateFilter implements FilterInterface
         }
 
         if ($to !== null) {
-            $query = $query->where($this->column, '<', $to->modify('+1 day')->format($format));
+            $next = $to->modify('+1 day');
+            $driver = $query->getDriver()?->getType();
+            if ($next->format('Y') === '10000' && $driver === 'SQLite') {
+                // A lexical sentinel after every valid four-digit ISO value
+                // on the final day, including fractional seconds. Do not
+                // ask SQLite DATE() to round the last representable second.
+                $query = $query->where($this->column, '<', '9999-12-32');
+            } elseif ($next->format('Y') === '10000' && in_array($driver, ['MySQL', 'SQLServer'], true)) {
+                // These dialects cannot represent the following midnight.
+                // Compare the calendar date only for this terminal bound;
+                // avoid truncating the last day's fractional seconds.
+                $query = $query->where(
+                    CalendarExpression::forQuery($query, $this->column, 'DATE'),
+                    '<=',
+                    $to->format('Y-m-d'),
+                );
+            } else {
+                $query = $query->where($this->column, '<', $next->format($format));
+            }
         }
 
         return $query;
