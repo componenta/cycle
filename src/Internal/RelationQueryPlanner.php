@@ -495,7 +495,18 @@ final readonly class RelationQueryPlanner
             // conversion even when compared to a binary column. Hex or
             // binary casts must not bypass the original text comparison.
             if (!$binary) {
-                return null;
+                // Printable ASCII is byte-stable only when both connection
+                // encodings preserve it. Never substitute LOB binding for
+                // the original text parameters, even on this exact path.
+                if (!ExactRelationLookup::binaryKeys($ids, $type === 'binary' ? $column['type'] : null)) {
+                    return null;
+                }
+                foreach ($ids as $id) {
+                    if (preg_match('/[^\x20-\x7e]/', $id) === 1) {
+                        return null;
+                    }
+                }
+                return self::mysqlAsciiConnection($driver) ? ['exact' => 'mysql-binary'] : null;
             }
             // BINARY(n) can introduce padding; use exact grouping only
             // for values already at the declared width (or variable types).
@@ -564,6 +575,26 @@ final readonly class RelationQueryPlanner
             }
         }
         return ['cast' => 'CAST(? AS CHAR CHARACTER SET ' . $charset . ') COLLATE ' . $collation, 'json' => null];
+    }
+
+    private static function mysqlAsciiConnection(DriverInterface $driver): bool
+    {
+        $statement = $driver->query(
+            'SELECT @@character_set_client AS client_charset, @@character_set_connection AS connection_charset',
+        );
+        try {
+            $row = $statement->fetch();
+        } finally {
+            $statement->close();
+        }
+
+        if ($row === false) {
+            return false;
+        }
+        $row = array_change_key_case($row, CASE_LOWER);
+        $asciiCompatible = ['ascii', 'latin1', 'utf8', 'utf8mb3', 'utf8mb4'];
+        return in_array($row['client_charset'], $asciiCompatible, true)
+            && in_array($row['connection_charset'], $asciiCompatible, true);
     }
 
     private static function mysqlJsonSupported(DriverInterface $driver): bool
