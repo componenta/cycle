@@ -491,9 +491,15 @@ final readonly class RelationQueryPlanner
 
         if (in_array($type, ['binary', 'varbinary', 'tinyblob', 'blob', 'mediumblob', 'longblob'], true)
             && is_string($ids[0])) {
+            // Text parameters can undergo connection character-set
+            // conversion even when compared to a binary column. Hex or
+            // binary casts must not bypass the original text comparison.
+            if (!$binary) {
+                return null;
+            }
             // BINARY(n) can introduce padding; use exact grouping only
             // for values already at the declared width (or variable types).
-            if ($binary && ExactRelationLookup::binaryKeys($ids, $type === 'binary' ? $column['type'] : null)) {
+            if (ExactRelationLookup::binaryKeys($ids, $type === 'binary' ? $column['type'] : null)) {
                 return ['exact' => 'mysql-binary'];
             }
             foreach ($ids as $id) {
