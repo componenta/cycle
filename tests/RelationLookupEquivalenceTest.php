@@ -30,7 +30,7 @@ it('large relation batches match individual database predicates with cold and re
     $driver = $db->getType();
     $binary = $kind === 'binary';
     $type = match ($kind) {
-        'integer', 'numeric-text' => 'BIGINT',
+        'integer', 'numeric-text', 'canonical-text' => 'BIGINT',
         'binary' => match ($driver) {
             'Postgres' => 'BYTEA',
             'MySQL' => 'VARBINARY(32)',
@@ -49,7 +49,7 @@ it('large relation batches match individual database predicates with cold and re
     };
 
     $stored = match ($kind) {
-        'integer', 'numeric-text' => [0, 1, 2, PHP_INT_MIN, PHP_INT_MAX, 9007199254740992, 9007199254740993, -3, ...range(10, 45)],
+        'integer', 'numeric-text', 'canonical-text' => [0, 1, 2, PHP_INT_MIN, PHP_INT_MAX, 9007199254740992, 9007199254740993, -3, ...range(10, 45)],
         'binary' => [
             '', '123', '00123', "\0", "\0\0", 'a', "a\0", "a\0\0", 'a ', 'a  ',
             ...array_map(static fn (int $n): string => pack('N4', 0x018f00ff, 0x00807000, 0x80ff0000, $n), range(1, 40)),
@@ -60,6 +60,7 @@ it('large relation batches match individual database predicates with cold and re
     $keys = match ($kind) {
         'integer' => [...$stored, 999999999, null, 1],
         'numeric-text' => [...array_map('strval', $stored), '01', '-03', '99', null, '1'],
+        'canonical-text' => [...array_map('strval', $stored), '99', null, '1'],
         'binary' => [...$stored, str_repeat("\0", 16), '000123', "a\0\0\0", null, $stored[0], $stored[1]],
         'text' => [...$stored, 'ABC', 'Abc', 'å', 'e', 'missing', null, 'abc'],
         'latin1' => [...$stored, 'ABC', 'missing', null, 'abc'],
@@ -98,6 +99,7 @@ it('large relation batches match individual database predicates with cold and re
 })->with([
     'wide integers' => ['integer', false],
     'noncanonical numeric text' => ['numeric-text', false],
+    'canonical numeric text' => ['canonical-text', true],
     'text collation and escaping' => ['text', false],
     'non-Unicode target charset' => ['latin1', false],
     'binary with prefix' => ['binary', true],

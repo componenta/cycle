@@ -43,8 +43,12 @@ final readonly class RelationQueryPlanner
         $postgresPlan = $plan !== null && $driver->getType() === 'Postgres' && count($ids) >= 16
             ? $this->postgresPlan($plan, $driver, $prefix, $ids, $binary)
             : null;
-        $sqlServerSeed = $plan !== null && $driver->getType() === 'SQLServer' && count($ids) >= 16
-            && self::uniformKeys($ids)
+        $sqlServerEligible = $plan !== null && $driver->getType() === 'SQLServer'
+            && count($ids) >= 16 && self::uniformKeys($ids);
+        $sqlServerPlan = $sqlServerEligible
+            ? $this->sqlServerPlan($plan, $driver, $prefix, $ids, $binary)
+            : null;
+        $sqlServerSeed = $sqlServerEligible && $sqlServerPlan === null
             ? $this->typedSeed($plan, $driver, $prefix, true)
             : null;
         $mysqlPlan = $plan !== null && $driver->getType() === 'MySQL' && count($ids) >= 16
@@ -72,13 +76,22 @@ final readonly class RelationQueryPlanner
                 continue;
             }
             // Only exact, type-verified equality can use returned lookup keys.
-            $exact = $postgresPlan['exact'] ?? $mysqlPlan['exact'] ?? null;
+            $exact = $postgresPlan['exact'] ?? $mysqlPlan['exact']
+                ?? ($sqlServerPlan === 'sqlserver-integer' ? $sqlServerPlan : null);
             if ($exact !== null) {
                 yield ExactRelationLookup::compile($base, $plan, $bindings, $driver, $prefix, $exact);
                 continue;
             }
             if ($postgresPlan !== null) {
                 $query = self::postgresQuery($base, $plan, $bindings, $postgresPlan['seed']);
+                $parameters = new QueryParameters();
+                $sql = $compiler->compile($parameters, $prefix, $query);
+                yield [$sql, $parameters->getParameters(), null];
+                continue;
+            }
+
+            if ($sqlServerPlan === 'sqlserver-json-binary') {
+                $query = self::sqlServerBinaryQuery($base, $plan, $bindings, $driver);
                 $parameters = new QueryParameters();
                 $sql = $compiler->compile($parameters, $prefix, $query);
                 yield [$sql, $parameters->getParameters(), null];
@@ -482,6 +495,90 @@ final readonly class RelationQueryPlanner
         return is_string($version) && stripos($version, 'MariaDB') === false
             && preg_match('/\A(\d+\.\d+\.\d+)/', $version, $matches) === 1
             && version_compare($matches[1], '8.0.4', '>=');
+    }
+
+    /**
+     * Only ordinary tables with a built-in system type qualify. A view,
+     * synonym, alias type, unavailable metadata or older compatibility
+     * level retains the native comparison path. Do not infer types from
+     * the representation returned by PDO_SQLSRV.
+     */
+    private function sqlServerPlan(
+        array $plan,
+        DriverInterface $driver,
+        string $prefix,
+        array $ids,
+        bool $binary,
+    ): ?string {
+        if ($binary) {
+            foreach ($ids as $id) {
+                if (!is_string($id) || strlen($id) > 32) {
+                    return null;
+                }
+            }
+        } elseif (!ExactRelationLookup::integerKeys($ids, [PHP_INT_MIN, PHP_INT_MAX], true)) {
+            return null;
+        }
+
+        $table = $driver->getQueryCompiler()->quoteIdentifier($prefix . $plan['keyTable']);
+        $statement = $driver->query(
+            'SELECT t.name AS type_name, d.compatibility_level'
+                . ' FROM sys.columns c JOIN sys.types t ON t.user_type_id = c.user_type_id'
+                . ' CROSS JOIN sys.databases d'
+                . " WHERE c.object_id = OBJECT_ID(?, 'U') AND c.name = ?"
+                . ' AND c.user_type_id = c.system_type_id AND d.database_id = DB_ID()',
+            [new Parameter($table), new Parameter($plan['keyColumn'])],
+        );
+        try {
+            $row = $statement->fetch();
+        } finally {
+            $statement->close();
+        }
+        if ($row === false) {
+            return null;
+        }
+
+        $type = $row['type_name'];
+        if ($binary) {
+            // Binary comparison can treat differently sized values as
+            // equal. Retain SQL-side ordinals instead of grouping by bytes.
+            return in_array($type, ['binary', 'varbinary'], true)
+                && (int) $row['compatibility_level'] >= 130
+                ? 'sqlserver-json-binary'
+                : null;
+        }
+
+        return ExactRelationLookup::integerKeys($ids, match ($type) {
+            'tinyint' => [0, 255],
+            'smallint' => [-32768, 32767],
+            'int' => [-2147483648, 2147483647],
+            'bigint' => [PHP_INT_MIN, PHP_INT_MAX],
+            default => null,
+        }, true) ? 'sqlserver-integer' : null;
+    }
+
+    /** @param array<int, Parameter> $bindings */
+    private static function sqlServerBinaryQuery(
+        SelectQuery $base,
+        array $plan,
+        array $bindings,
+        DriverInterface $driver,
+    ): SelectQuery {
+        $compiler = $driver->getQueryCompiler();
+        $column = $compiler->quoteIdentifier($plan['alias'] . '.' . $plan['keyColumn']);
+        $values = array_map(
+            static fn (Parameter $parameter): string => bin2hex($parameter->getValue()),
+            array_values($bindings),
+        );
+        $keys = new Fragment(
+            'OPENJSON(CAST(? AS nvarchar(max))) AS [_componenta_keys]',
+            json_encode($values, JSON_THROW_ON_ERROR),
+        );
+        $ordinal = 'CONVERT(int, [_componenta_keys].[key]) + ' . array_key_first($bindings);
+        return (clone $base)
+            ->from([$keys, $plan['table']])
+            ->columns([new Fragment($ordinal), ...$plan['columns']])
+            ->where(new Fragment($column . ' = CONVERT(varbinary(max), [_componenta_keys].[value], 2)'));
     }
 
     /**

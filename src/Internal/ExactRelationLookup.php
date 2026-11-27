@@ -20,12 +20,15 @@ use Cycle\Database\Query\SelectQuery;
 final class ExactRelationLookup
 {
     /** @param list<mixed> $ids @param array{int, int}|null $bounds */
-    public static function integerKeys(array $ids, ?array $bounds): bool
+    public static function integerKeys(array $ids, ?array $bounds, bool $canonicalStrings = false): bool
     {
         if ($bounds === null) {
             return false;
         }
         foreach ($ids as $id) {
+            if ($canonicalStrings && is_string($id) && (string) (int) $id === $id) {
+                $id = (int) $id;
+            }
             if (!is_int($id) || $id < $bounds[0] || $id > $bounds[1]) {
                 return false;
             }
