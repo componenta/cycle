@@ -75,6 +75,9 @@ final class ExactRelationLookup
         $quoted = $compiler->quoteIdentifier($column);
         $binary = $kind === 'mysql-binary' || $kind === 'pg-bytea';
         $group = match ($kind) {
+            // ZEROFILL columns can be returned as padded strings. Canonicalize
+            // only the technical grouping value, not the related projection.
+            'mysql-integer' => 'CAST(' . $quoted . ' AS SIGNED)',
             'mysql-binary' => 'LOWER(HEX(' . $quoted . '))',
             'pg-bytea' => "pg_catalog.encode($quoted, 'hex')",
             default => $quoted,
