@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Componenta\Cycle\Internal;
 
 use Cycle\Database\DatabaseInterface;
+use Cycle\Database\Driver\CompilerInterface;
 use Cycle\Database\Driver\DriverInterface;
 use Cycle\Database\Injection\Fragment;
 use Cycle\Database\Injection\Parameter;
@@ -56,6 +57,8 @@ final readonly class RelationQueryPlanner
             'SQLServer' => 2000,
             default => 65535,
         };
+        $template = null;
+        $templateChecked = false;
         foreach (array_chunk($ids, self::BATCH_SIZE, true) as $chunk) {
             $bindings = array_map(
                 static fn (mixed $id): Parameter => new Parameter($id, $binary ? PDO::PARAM_LOB : Parameter::DETECT_TYPE),
@@ -96,13 +99,24 @@ final readonly class RelationQueryPlanner
             // the parentheses DBAL adds around nested SELECT fragments.
             $arms = [];
             $queryBindings = [];
+            if (!$templateChecked) {
+                $template = self::simpleArmTemplate(
+                    $base, $projection, $column, $bindings[array_key_first($bindings)], $compiler, $prefix,
+                );
+                $templateChecked = true;
+            }
             foreach ($bindings as $ordinal => $parameter) {
-                $arm = (clone $base)
-                    ->columns([new Fragment((string) $ordinal), ...$projection])
-                    ->where($column, '=', $parameter);
-                $parameters = new QueryParameters();
-                $sql = $compiler->compile($parameters, $prefix, $arm);
-                $armBindings = $parameters->getParameters();
+                if ($template !== null) {
+                    $sql = $template[0] . $ordinal . $template[1];
+                    $armBindings = [$parameter];
+                } else {
+                    $arm = (clone $base)
+                        ->columns([new Fragment((string) $ordinal), ...$projection])
+                        ->where($column, '=', $parameter);
+                    $parameters = new QueryParameters();
+                    $sql = $compiler->compile($parameters, $prefix, $arm);
+                    $armBindings = $parameters->getParameters();
+                }
                 // Trusted projections may themselves contain parameters;
                 // count the real compiled bindings, not only lookup keys.
                 if ($arms !== [] && count($queryBindings) + count($armBindings) > $maxParameters) {
@@ -115,6 +129,50 @@ final readonly class RelationQueryPlanner
             }
             yield [implode("\nUNION ALL\n", $arms), $queryBindings, null];
         }
+    }
+
+    /**
+     * The bundled DBAL compilers emit the same scalar predicate for each
+     * non-null key. Reuse that SQL shape only for plain projections and
+     * the exact known compiler implementations. Custom fragments and
+     * custom compilers can have their own binding/compilation behavior.
+     *
+     * @return array{string, string}|null
+     */
+    private static function simpleArmTemplate(
+        SelectQuery $base,
+        array $projection,
+        string $column,
+        Parameter $first,
+        CompilerInterface $compiler,
+        string $prefix,
+    ): ?array {
+        if (!in_array($compiler::class, [
+            \Cycle\Database\Driver\SQLite\SQLiteCompiler::class,
+            \Cycle\Database\Driver\MySQL\MySQLCompiler::class,
+            \Cycle\Database\Driver\Postgres\PostgresCompiler::class,
+            \Cycle\Database\Driver\SQLServer\SQLServerCompiler::class,
+        ], true)) {
+            return null;
+        }
+        foreach ($base->getColumns() as $field) {
+            if (!is_string($field)) {
+                return null;
+            }
+        }
+        $arm = (clone $base)
+            ->columns([new Fragment('0'), ...$projection])
+            ->where($column, '=', $first);
+        $parameters = new QueryParameters();
+        $sql = $compiler->compile($parameters, $prefix, $arm);
+        if ($parameters->getParameters() !== [$first]
+            || preg_match('/\A(SELECT\s+)0(?=\s*,)/i', $sql, $match) !== 1) {
+            return null;
+        }
+
+        // Substitute only the internally generated first SELECT literal.
+        // Neither identifiers nor user data enter this substitution.
+        return [$match[1], substr($sql, strlen($match[0]))];
     }
 
     /**
