@@ -14,6 +14,8 @@ Install `componenta/cycle-app` only when an application needs entity discovery, 
 
 The package supports Config 3 with DI 5, and Config 4 with DI 6 when compatible versions of all transitive dependencies are available. PHP 8.4 is supported with DI 5; DI 6 requires the PHP version declared by that package.
 
+The default MySQL connection factory uses `utf8mb4` for the client and connection character sets, including initialization after reconnecting. This does not alter the character set or collation of existing database columns. Applications that require other connection settings can supply their own database configuration.
+
 ## Related Packages
 
 | Package | Why it matters here |
