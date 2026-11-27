@@ -67,3 +67,5 @@ Full source trees `3db46076af22101df6fbf3fe0ef1445b39796929` and `fc61fd517b13a1
 | Entity hydration and extraction, 10,000 entities | 60.8321 | 60.1911 | -1.1% |
 
 Default extraction now also checks cached dynamic-property metadata. The extra cost is visible in isolated extraction (about 23–62 ns per call in this run); combined hydration and extraction and the fetcher workloads remain close to the optimized baseline. These measurements are workload-specific; sequential samples on a shared runner do not establish statistical significance. The normal test workflow remains free of benchmarking steps.
+
+`RelationDatabaseScaleBench` complements the 1,200-row fixture with 65,536 indexed lookup rows, sparse sets of 10 and 1,000 distinct integer or collated text keys, and full correctness preflight on both reused and fresh fetchers. It isolates relation lookup time from root-query pagination. Its fixture uses bounded geometric inserts outside the measured subjects.
