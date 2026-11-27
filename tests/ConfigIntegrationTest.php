@@ -237,3 +237,39 @@ final class ApplicationRoleHandler implements CastableInterface
         return $data;
     }
 }
+
+
+it('uses a MySQL connection that round trips full UTF-8 text through the default factory', function (): void {
+    if (getenv('CYCLE_TEST_DB_DRIVER') !== 'mysql') {
+        Assert::markTestSkipped('MySQL connection encoding integration.');
+    }
+    $env = ['DB_DRIVER' => 'mysql'];
+    foreach (['NAME', 'HOST', 'PORT', 'USER', 'PASSWORD'] as $key) {
+        $value = getenv('CYCLE_TEST_DB_' . $key);
+        if ($value !== false) {
+            $env['DB_' . $key] = $value;
+        }
+    }
+    $database = configIntegrationContainer(environment: $env)->get(DatabaseManager::class)->database();
+    $value = 'Русский текст, café, 😀, 𐐀';
+    try {
+        $database->execute('CREATE TABLE cycle_test_connection_utf8 (value VARCHAR(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin)');
+        $database->execute('INSERT INTO cycle_test_connection_utf8 (value) VALUES (?)', [new \Cycle\Database\Injection\Parameter($value)]);
+        $statement = $database->query('SELECT value FROM cycle_test_connection_utf8');
+        try {
+            expect($statement->fetchColumn())->toBe($value);
+        } finally {
+            $statement->close();
+        }
+        $statement = $database->query('SELECT @@character_set_client AS client_charset, @@character_set_connection AS connection_charset');
+        try {
+            $row = $statement->fetch();
+            expect($row['client_charset'])->toBe('utf8mb4');
+            expect($row['connection_charset'])->toBe('utf8mb4');
+        } finally {
+            $statement->close();
+        }
+    } finally {
+        $database->execute('DROP TABLE IF EXISTS cycle_test_connection_utf8');
+    }
+});
