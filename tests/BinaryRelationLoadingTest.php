@@ -127,7 +127,7 @@ it('binary keys load all three relation types', function (bool $explicitBinary, 
         expect($rows)->toBe($expected);
         // Metadata probes are scoped to each large relation, not each key.
         $metadataReads = $additionalKeys === 0 ? 0 : match ($db->getType()) {
-            'MySQL' => 6,
+            'MySQL' => 3,
             'Postgres' => 3,
             default => 0,
         };

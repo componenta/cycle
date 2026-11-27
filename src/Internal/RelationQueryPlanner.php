@@ -23,7 +23,7 @@ final readonly class RelationQueryPlanner
      * Each returned statement projects the original lookup ordinal first.
      *
      * @param list<mixed> $ids
-     * @return iterable<array{string, array}>
+     * @return iterable<array{string, array, ?array}>
      */
     public function queries(
         SelectQuery $base,
@@ -39,8 +39,8 @@ final readonly class RelationQueryPlanner
         $compiler = $driver->getQueryCompiler();
         $prefix = $base->getPrefix() ?? '';
         $projection = self::groupProjection($base, $driver);
-        $postgresSeed = $plan !== null && $driver->getType() === 'Postgres' && count($ids) >= 16
-            ? $this->postgresSeed($plan, $driver, $prefix)
+        $postgresPlan = $plan !== null && $driver->getType() === 'Postgres' && count($ids) >= 16
+            ? $this->postgresPlan($plan, $driver, $prefix, $ids, $binary)
             : null;
         $sqlServerSeed = $plan !== null && $driver->getType() === 'SQLServer' && count($ids) >= 16
             && self::uniformKeys($ids)
@@ -65,14 +65,20 @@ final readonly class RelationQueryPlanner
                 $query = $this->sqliteQuery($plan, $bindings);
                 $parameters = new QueryParameters();
                 $sql = $compiler->compile($parameters, $prefix, $query);
-                yield [$sql, $parameters->getParameters()];
+                yield [$sql, $parameters->getParameters(), null];
                 continue;
             }
-            if ($postgresSeed !== null) {
-                $query = self::postgresQuery($base, $plan, $bindings, $postgresSeed);
+            // Only exact, type-verified equality can use returned lookup keys.
+            $exact = $postgresPlan['exact'] ?? $mysqlPlan['exact'] ?? null;
+            if ($exact !== null) {
+                yield ExactRelationLookup::compile($base, $plan, $bindings, $driver, $prefix, $exact);
+                continue;
+            }
+            if ($postgresPlan !== null) {
+                $query = self::postgresQuery($base, $plan, $bindings, $postgresPlan['seed']);
                 $parameters = new QueryParameters();
                 $sql = $compiler->compile($parameters, $prefix, $query);
-                yield [$sql, $parameters->getParameters()];
+                yield [$sql, $parameters->getParameters(), null];
                 continue;
             }
 
@@ -80,7 +86,7 @@ final readonly class RelationQueryPlanner
                 $query = self::serverKeyQuery($base, $plan, $bindings, $driver, $sqlServerSeed, $mysqlPlan);
                 $parameters = new QueryParameters();
                 $sql = $compiler->compile($parameters, $prefix, $query);
-                yield [$sql, $parameters->getParameters()];
+                yield [$sql, $parameters->getParameters(), null];
                 continue;
             }
 
@@ -100,14 +106,14 @@ final readonly class RelationQueryPlanner
                 // Trusted projections may themselves contain parameters;
                 // count the real compiled bindings, not only lookup keys.
                 if ($arms !== [] && count($queryBindings) + count($armBindings) > $maxParameters) {
-                    yield [implode("\nUNION ALL\n", $arms), $queryBindings];
+                    yield [implode("\nUNION ALL\n", $arms), $queryBindings, null];
                     $arms = [];
                     $queryBindings = [];
                 }
                 $arms[] = $sql;
                 array_push($queryBindings, ...$armBindings);
             }
-            yield [implode("\nUNION ALL\n", $arms), $queryBindings];
+            yield [implode("\nUNION ALL\n", $arms), $queryBindings, null];
         }
     }
 
@@ -237,11 +243,16 @@ final readonly class RelationQueryPlanner
      * when a temporary table shadows the original source. Inspect the type
      * of the actual scalar subquery, not a cached catalog table name.
      */
-    private function postgresSeed(array $plan, DriverInterface $driver, string $prefix): ?string
+    private function postgresPlan(array $plan, DriverInterface $driver, string $prefix, array $ids, bool $binary): ?array
     {
         $seed = $this->typedSeed($plan, $driver, $prefix);
         $statement = $driver->query(
-            'SELECT t.typname FROM pg_catalog.pg_type t'
+            'SELECT t.typname, EXISTS (SELECT 1 FROM pg_catalog.pg_operator o'
+                . ' JOIN pg_catalog.pg_namespace ns ON ns.oid = o.oprnamespace'
+                . " WHERE ns.nspname = 'pg_catalog' AND o.oprname = '='"
+                . ' AND o.oprleft = t.oid AND o.oprright = t.oid'
+                . ' AND pg_catalog.pg_operator_is_visible(o.oid)) AS native_equality'
+                . ' FROM pg_catalog.pg_type t'
                 . ' JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace'
                 . " WHERE n.nspname = 'pg_catalog' AND t.oid = pg_catalog.pg_typeof((" . $seed . '))::oid',
         );
@@ -251,9 +262,32 @@ final readonly class RelationQueryPlanner
             $statement->close();
         }
 
-        return $row !== false && in_array($row['typname'], [
+        if ($row === false || !in_array($row['typname'], [
             'int2', 'int4', 'int8', 'text', 'varchar', 'bpchar', 'bytea', 'uuid',
-        ], true) ? $seed : null;
+        ], true)) {
+            return null;
+        }
+        $type = $row['typname'];
+        $native = in_array($row['native_equality'], [true, 1, '1', 't'], true);
+        $exact = null;
+        if (in_array($type, ['int2', 'int4', 'int8', 'bytea'], true)) {
+            // A shadowed equality operator cannot be reduced to PHP identity.
+            if (!$native) {
+                return null;
+            }
+            if ($type === 'bytea' && $binary) {
+                $exact = 'pg-bytea';
+            } elseif (!$binary && ExactRelationLookup::integerKeys($ids, match ($type) {
+                'int2' => [-32768, 32767],
+                'int4' => [-2147483648, 2147483647],
+                'int8' => [PHP_INT_MIN, PHP_INT_MAX],
+                default => null,
+            })) {
+                $exact = 'pg-' . $type;
+            }
+        }
+
+        return ['seed' => $seed, 'exact' => $exact];
     }
 
     /** @param array<int, Parameter> $bindings */
@@ -299,7 +333,7 @@ final readonly class RelationQueryPlanner
      * Capability and column metadata are execution-scoped, not cached
      * across requests or reconnections.
      *
-     * @return array{cast: string, json: ?string}|null
+     * @return array{exact: string}|array{cast: string, json: ?string}|null
      */
     private function mysqlPlan(array $plan, DriverInterface $driver, string $prefix, array $ids, bool $binary): ?array
     {
@@ -328,6 +362,11 @@ final readonly class RelationQueryPlanner
 
         if (in_array($type, ['binary', 'varbinary', 'tinyblob', 'blob', 'mediumblob', 'longblob'], true)
             && is_string($ids[0])) {
+            // BINARY(n) can introduce padding; use exact grouping only
+            // for values already at the declared width (or variable types).
+            if ($binary && ExactRelationLookup::binaryKeys($ids, $type === 'binary' ? $column['Type'] : null)) {
+                return ['exact' => 'mysql-binary'];
+            }
             foreach ($ids as $id) {
                 if (strlen($id) > 256) {
                     return ['cast' => 'CAST(? AS BINARY)', 'json' => null];
@@ -341,7 +380,19 @@ final readonly class RelationQueryPlanner
         }
         if (in_array($type, ['tinyint', 'smallint', 'mediumint', 'int', 'bigint'], true)
             && is_int($ids[0])) {
-            return ['cast' => 'CAST(? AS SIGNED)', 'json' => self::mysqlJsonSupported($driver) ? 'integer' : null];
+            $unsigned = str_contains(strtolower($column['Type']), 'unsigned');
+            $bounds = match ($type) {
+                'tinyint' => $unsigned ? [0, 255] : [-128, 127],
+                'smallint' => $unsigned ? [0, 65535] : [-32768, 32767],
+                'mediumint' => $unsigned ? [0, 16777215] : [-8388608, 8388607],
+                'int' => $unsigned ? [0, 4294967295] : [-2147483648, 2147483647],
+                'bigint' => [$unsigned ? 0 : PHP_INT_MIN, PHP_INT_MAX],
+            };
+            if (ExactRelationLookup::integerKeys($ids, $bounds)) {
+                return ['exact' => 'mysql-integer'];
+            }
+            // Keep direct predicates for values outside the declared range.
+            return null;
         }
         if (!is_string($ids[0]) || !in_array($type, ['char', 'varchar', 'tinytext', 'text', 'mediumtext', 'longtext'], true)) {
             return null;

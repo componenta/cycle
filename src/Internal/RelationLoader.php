@@ -193,8 +193,8 @@ final readonly class RelationLoader
         }
         $driver = $base->getDriver() ?? throw new \LogicException('A relation query must have a database driver.');
         $groups = [];
-        foreach ($this->planner->queries($base, $column, $ids, $binary, $plan) as [$sql, $bindings]) {
-            self::readGroups($driver, $sql, $bindings, $groups, $transform);
+        foreach ($this->planner->queries($base, $column, $ids, $binary, $plan) as [$sql, $bindings, $ordinals]) {
+            self::readGroups($driver, $sql, $bindings, $groups, $transform, $ordinals);
         }
         return $groups;
     }
@@ -209,6 +209,7 @@ final readonly class RelationLoader
         array $bindings,
         array &$groups,
         ?Closure $transform,
+        ?array $ordinals,
     ): void {
         $statement = $driver->query($sql, $bindings);
         try {
@@ -218,6 +219,9 @@ final readonly class RelationLoader
         }
 
         foreach ($matches as $ordinal => $rows) {
+            if ($ordinals !== null) {
+                $ordinal = $ordinals[$ordinal] ?? throw new \UnexpectedValueException('An exact relation lookup returned an unrequested key.');
+            }
             $groups[$ordinal] = $transform === null ? $rows : array_map($transform, $rows);
         }
     }
