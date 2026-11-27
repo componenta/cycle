@@ -437,3 +437,42 @@ it('matches SQL Server collated text against individual predicates including ANS
     'Unicode binary' => ['NVARCHAR(64)', 'Latin1_General_100_BIN2', true],
     'SQL collation fallback' => ['VARCHAR(64)', 'SQL_Latin1_General_CP1_CI_AS', false],
 ]);
+
+
+it('preserves MySQL in-range noncanonical integer strings and latin1 ASCII comparisons', function (bool $numeric): void {
+    $db = relationEqualityDatabase();
+    if ($db->getType() !== 'MySQL') {
+        \PHPUnit\Framework\Assert::markTestSkipped('MySQL derived key comparison.');
+    }
+    $type = $numeric ? 'INTEGER' : 'VARCHAR(64) CHARACTER SET latin1 COLLATE latin1_swedish_ci';
+    $stored = $numeric ? [-2147483648, 2147483647, -3, 0, 1, 2, 17] : ['abc', 'ABC', 'abc ', 'e', 'é', 'å', '0', '00', '', ' ', 'x"y', "x\\y"];
+    $keys = $numeric
+        ? ['-02147483648', '0002147483647', '-003', '-0', '0000', '01', '1', '002', ...array_map('strval', range(10, 45))]
+        : ['abc', 'AbC', 'ABC ', 'e', 'E', 'a', '0', '00', '', ' ', 'x"y', "x\\y", ...array_map('strval', range(10, 45))];
+    try {
+        $db->execute("CREATE TABLE cycle_test_lookup (lookup_key $type, seq INTEGER)");
+        $db->execute('CREATE INDEX cycle_test_lookup_idx ON cycle_test_lookup(lookup_key)');
+        foreach ($stored as $index => $value) {
+            $db->execute('INSERT INTO cycle_test_lookup VALUES (?, ?)', [new Parameter($value), new Parameter($index + 1)]);
+        }
+        $expected = [];
+        foreach ($keys as $key) {
+            $rows = $db->select('seq')->from('cycle_test_lookup')->where('lookup_key', '=', new Parameter($key))->fetchAll();
+            $values = array_map(static fn (array $row): int => (int) $row['seq'], $rows);
+            sort($values);
+            $expected[] = $values;
+        }
+        $fetcher = new RelationLookupOracleFetcher($db, false);
+        expect($fetcher($keys))->toBe($expected);
+        expect($fetcher($keys))->toBe($expected);
+        // One nondecimal or out-of-range string forces native predicates
+        // for the complete numeric batch instead of truncating the key.
+        if ($numeric) {
+            $keys[] = '2147483648';
+            $expected[] = [];
+            expect($fetcher($keys))->toBe($expected);
+        }
+    } finally {
+        $db->execute('DROP TABLE IF EXISTS cycle_test_lookup');
+    }
+})->with([true, false]);

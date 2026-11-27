@@ -507,8 +507,7 @@ final readonly class RelationQueryPlanner
             // An explicit LOB binding must not become a text parameter.
             return null;
         }
-        if (in_array($type, ['tinyint', 'smallint', 'mediumint', 'int', 'bigint'], true)
-            && is_int($ids[0])) {
+        if (in_array($type, ['tinyint', 'smallint', 'mediumint', 'int', 'bigint'], true)) {
             $unsigned = str_contains(strtolower($column['type']), 'unsigned');
             $bounds = match ($type) {
                 'tinyint' => $unsigned ? [0, 255] : [-128, 127],
@@ -520,6 +519,22 @@ final readonly class RelationQueryPlanner
             if (ExactRelationLookup::integerKeys($ids, $bounds)) {
                 return ['exact' => 'mysql-integer'];
             }
+            // MySQL can compare integer columns to text through floating
+            // point conversion. Only the <=32-bit integer types and
+            // in-range decimal strings have provably exact numeric
+            // comparisons; retain SQL ordinals for '01' and '1'.
+            if ($type !== 'bigint' && is_string($ids[0])) {
+                foreach ($ids as $id) {
+                    if (preg_match('/\A-?[0-9]+\z/', $id) !== 1) {
+                        return null;
+                    }
+                    $value = (int) $id;
+                    if ($value < $bounds[0] || $value > $bounds[1]) {
+                        return null;
+                    }
+                }
+                return ['cast' => 'CAST(? AS SIGNED)', 'json' => self::mysqlJsonSupported($driver) ? 'integer' : null];
+            }
             // Keep direct predicates for values outside the declared range.
             return null;
         }
@@ -529,15 +544,20 @@ final readonly class RelationQueryPlanner
         $collation = $column['collation'];
         // A conversion to a narrower charset can replace input characters
         // with '?'. Retain the original comparison in that case.
-        if (!is_string($collation) || !str_starts_with($collation, 'utf8mb4_') || !self::simpleIdentifier($collation)) {
+        if (!is_string($collation) || !self::simpleIdentifier($collation)) {
+            return null;
+        }
+        $charset = str_starts_with($collation, 'utf8mb4_') ? 'utf8mb4'
+            : (str_starts_with($collation, 'latin1_') ? 'latin1' : null);
+        if ($charset === null) {
             return null;
         }
         foreach ($ids as $id) {
-            if (preg_match('//u', $id) !== 1) {
+            if ($charset === 'latin1' ? preg_match('/[^\x20-\x7e]/', $id) === 1 : preg_match('//u', $id) !== 1) {
                 return null;
             }
         }
-        return ['cast' => 'CAST(? AS CHAR CHARACTER SET utf8mb4) COLLATE ' . $collation, 'json' => null];
+        return ['cast' => 'CAST(? AS CHAR CHARACTER SET ' . $charset . ') COLLATE ' . $collation, 'json' => null];
     }
 
     private static function mysqlJsonSupported(DriverInterface $driver): bool
