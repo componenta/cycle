@@ -24,7 +24,7 @@ final readonly class RelationQueryPlanner
      * Each returned statement projects the original lookup ordinal first.
      *
      * @param list<mixed> $ids
-     * @return iterable<array{string, array, ?array}>
+     * @return iterable<array{string, array, ?array, 3?: list<array{string, array}>}>
      */
     public function queries(
         SelectQuery $base,
@@ -39,6 +39,7 @@ final readonly class RelationQueryPlanner
         $driver = $base->getDriver() ?? throw new \LogicException('A relation query must have a database driver.');
         $compiler = $driver->getQueryCompiler();
         $prefix = $base->getPrefix() ?? '';
+        $mysql = $driver->getType() === 'MySQL';
         $projection = self::groupProjection($base, $driver);
         $postgresPlan = $plan !== null && $driver->getType() === 'Postgres' && count($ids) >= 16
             ? $this->postgresPlan($plan, $driver, $prefix, $ids, $binary)
@@ -120,6 +121,7 @@ final readonly class RelationQueryPlanner
             // the parentheses DBAL adds around nested SELECT fragments.
             $arms = [];
             $queryBindings = [];
+            $individual = [];
             if (!$templateChecked) {
                 $template = self::simpleArmTemplate(
                     $base, $projection, $column, $bindings[array_key_first($bindings)], $compiler, $prefix,
@@ -141,14 +143,20 @@ final readonly class RelationQueryPlanner
                 // Trusted projections may themselves contain parameters;
                 // count the real compiled bindings, not only lookup keys.
                 if ($arms !== [] && count($queryBindings) + count($armBindings) > $maxParameters) {
-                    yield [implode("\nUNION ALL\n", $arms), $queryBindings, null];
+                    yield [implode("\nUNION ALL\n", $arms), $queryBindings, null, $individual];
                     $arms = [];
                     $queryBindings = [];
+                    $individual = [];
                 }
                 $arms[] = $sql;
                 array_push($queryBindings, ...$armBindings);
+                if ($mysql) {
+                    // Keep each arm's own parameter order, including bound
+                    // projection expressions, for a temporary-table retry.
+                    $individual[] = [$sql, $armBindings];
+                }
             }
-            yield [implode("\nUNION ALL\n", $arms), $queryBindings, null];
+            yield [implode("\nUNION ALL\n", $arms), $queryBindings, null, $individual];
         }
     }
 

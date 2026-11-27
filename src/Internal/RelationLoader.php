@@ -7,6 +7,7 @@ namespace Componenta\Cycle\Internal;
 use Closure;
 use Cycle\Database\DatabaseInterface;
 use Cycle\Database\Driver\DriverInterface;
+use Cycle\Database\Exception\StatementException;
 use Cycle\Database\Query\SelectQuery;
 use InvalidArgumentException;
 use PDO;
@@ -200,36 +201,64 @@ final readonly class RelationLoader
         }
         $driver = $base->getDriver() ?? throw new \LogicException('A relation query must have a database driver.');
         $groups = [];
-        foreach ($this->planner->queries($base, $column, $ids, $binary, $plan) as [$sql, $bindings, $ordinals]) {
-            self::readGroups($driver, $sql, $bindings, $groups, $transform, $ordinals);
+        $individual = false;
+        foreach ($this->planner->queries($base, $column, $ids, $binary, $plan) as $batch) {
+            $matches = self::readBatch($driver, $batch, $individual);
+            $ordinals = $batch[2];
+            foreach ($matches as $ordinal => $rows) {
+                if ($ordinals !== null) {
+                    $ordinal = $ordinals[$ordinal] ?? throw new \UnexpectedValueException('An exact relation lookup returned an unrequested key.');
+                }
+                $groups[$ordinal] = $transform === null ? $rows : array_map($transform, $rows);
+            }
         }
         return $groups;
     }
 
     /**
-     * Close the statement before invoking application transforms. Transform
-     * and release each batch rather than accumulating all raw to-many rows.
+     * MySQL rejects compound SELECTs that reopen a temporary table. Retry
+     * only its documented server error 1137 and only if this batch contains
+     * multiple independent SELECT arms. Keep this decision execution-local.
+     * No application callback runs until all rows in the batch are read.
+     *
+     * @param array{string, array, ?array, 3?: list<array{string, array}>} $batch
      */
-    private static function readGroups(
-        DriverInterface $driver,
-        string $sql,
-        array $bindings,
-        array &$groups,
-        ?Closure $transform,
-        ?array $ordinals,
-    ): void {
-        $statement = $driver->query($sql, $bindings);
-        try {
-            $matches = $statement->fetchAll(PDO::FETCH_GROUP | PDO::FETCH_ASSOC);
-        } finally {
-            $statement->close();
+    private static function readBatch(DriverInterface $driver, array $batch, bool &$individual): array
+    {
+        [$sql, $bindings] = $batch;
+        $arms = $batch[3] ?? [];
+        if (!$individual || count($arms) < 2) {
+            try {
+                return self::fetchGroups($driver, $sql, $bindings);
+            } catch (StatementException $exception) {
+                $cause = $exception->getPrevious();
+                if (count($arms) < 2 || $driver->getType() !== 'MySQL'
+                    || !$cause instanceof \PDOException
+                    || (int) ($cause->errorInfo[1] ?? 0) !== 1137) {
+                    throw $exception;
+                }
+                $individual = true;
+            }
         }
 
-        foreach ($matches as $ordinal => $rows) {
-            if ($ordinals !== null) {
-                $ordinal = $ordinals[$ordinal] ?? throw new \UnexpectedValueException('An exact relation lookup returned an unrequested key.');
+        $matches = [];
+        foreach ($arms as [$armSql, $armBindings]) {
+            foreach (self::fetchGroups($driver, $armSql, $armBindings) as $ordinal => $rows) {
+                $matches[$ordinal] = $rows;
             }
-            $groups[$ordinal] = $transform === null ? $rows : array_map($transform, $rows);
+        }
+
+        return $matches;
+    }
+
+    /** Close every cursor before invoking application transforms. */
+    private static function fetchGroups(DriverInterface $driver, string $sql, array $bindings): array
+    {
+        $statement = $driver->query($sql, $bindings);
+        try {
+            return $statement->fetchAll(PDO::FETCH_GROUP | PDO::FETCH_ASSOC);
+        } finally {
+            $statement->close();
         }
     }
 
