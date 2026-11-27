@@ -106,6 +106,14 @@ final readonly class RelationQueryPlanner
                 continue;
             }
 
+            if ($plan !== null && $driver->getType() === 'MySQL' && count($bindings) > 1) {
+                $query = self::mysqlPredicateQuery($base, $plan, $bindings, $driver);
+                $parameters = new QueryParameters();
+                $sql = $compiler->compile($parameters, $prefix, $query);
+                yield [$sql, $parameters->getParameters(), null];
+                continue;
+            }
+
             // Each comparison is typed by its actual target column. A
             // heterogeneous VALUES table would coerce or reject keys on
             // PostgreSQL/SQL Server. Compile standalone arms: SQLite rejects
@@ -397,6 +405,38 @@ final readonly class RelationQueryPlanner
             }
         }
         return true;
+    }
+
+    /**
+     * Preserve the original scalar comparison for every requested key.
+     * MySQL cannot reopen a temporary table in multiple UNION arms; the
+     * derived relation here contains only generated ordinals. Each key
+     * retains its own bound parameter and comparison with the real column.
+     *
+     * @param array<int, Parameter> $bindings
+     */
+    private static function mysqlPredicateQuery(
+        SelectQuery $base,
+        array $plan,
+        array $bindings,
+        DriverInterface $driver,
+    ): SelectQuery {
+        $compiler = $driver->getQueryCompiler();
+        $alias = $compiler->quoteIdentifier('_componenta_keys');
+        $ordinal = $alias . '.' . $compiler->quoteIdentifier('componenta_ordinal');
+        $key = $compiler->quoteIdentifier($plan['alias'] . '.' . $plan['keyColumn']);
+        $arms = [];
+        $conditions = [];
+        foreach ($bindings as $index => $parameter) {
+            $arms[] = 'SELECT ' . $index . ' AS componenta_ordinal';
+            $conditions[] = '(' . $ordinal . ' = ' . $index . ' AND ' . $key . ' = ?)';
+        }
+        $keys = new Fragment('(' . implode("\nUNION ALL\n", $arms) . ') AS ' . $alias);
+
+        return (clone $base)
+            ->from([$keys, $plan['table']])
+            ->columns([new Fragment($ordinal), ...$plan['columns']])
+            ->where(new Fragment(implode(' OR ', $conditions), ...array_values($bindings)));
     }
 
     /**
