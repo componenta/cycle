@@ -251,6 +251,12 @@ final readonly class RelationQueryPlanner
                 $qualified[] = 'r.*';
             } elseif (is_string($field) && self::simpleIdentifier($field)) {
                 $qualified[] = 'r.' . $field;
+            } elseif (is_string($field) && preg_match(
+                '/\A([A-Za-z_][A-Za-z0-9_]*)[ \t]+AS[ \t]+([A-Za-z_][A-Za-z0-9_]*)\z/i',
+                $field,
+                $aliasParts,
+            ) === 1) {
+                $qualified[] = 'r.' . $aliasParts[1] . ' AS ' . $aliasParts[2];
             } else {
                 return null;
             }
