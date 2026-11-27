@@ -333,6 +333,9 @@ final readonly class RelationQueryPlanner
             $statement->close();
         }
 
+        if ($row !== false) {
+            $row = array_change_key_case($row, CASE_LOWER);
+        }
         if ($row === false || !in_array($row['typname'], [
             'int2', 'int4', 'int8', 'text', 'varchar', 'bpchar', 'bytea', 'uuid',
         ], true)) {
@@ -418,7 +421,8 @@ final readonly class RelationQueryPlanner
         $column = null;
         try {
             while (($row = $statement->fetch()) !== false) {
-                if (strcasecmp($row['Field'], $plan['keyColumn']) === 0) {
+                $row = array_change_key_case($row, CASE_LOWER);
+                if (strcasecmp($row['field'], $plan['keyColumn']) === 0) {
                     $column = $row;
                     break;
                 }
@@ -426,7 +430,7 @@ final readonly class RelationQueryPlanner
         } finally {
             $statement->close();
         }
-        if ($column === null || preg_match('/\A([a-z]+)/i', $column['Type'], $matches) !== 1) {
+        if ($column === null || preg_match('/\A([a-z]+)/i', $column['type'], $matches) !== 1) {
             return null;
         }
         $type = strtolower($matches[1]);
@@ -435,7 +439,7 @@ final readonly class RelationQueryPlanner
             && is_string($ids[0])) {
             // BINARY(n) can introduce padding; use exact grouping only
             // for values already at the declared width (or variable types).
-            if ($binary && ExactRelationLookup::binaryKeys($ids, $type === 'binary' ? $column['Type'] : null)) {
+            if ($binary && ExactRelationLookup::binaryKeys($ids, $type === 'binary' ? $column['type'] : null)) {
                 return ['exact' => 'mysql-binary'];
             }
             foreach ($ids as $id) {
@@ -451,7 +455,7 @@ final readonly class RelationQueryPlanner
         }
         if (in_array($type, ['tinyint', 'smallint', 'mediumint', 'int', 'bigint'], true)
             && is_int($ids[0])) {
-            $unsigned = str_contains(strtolower($column['Type']), 'unsigned');
+            $unsigned = str_contains(strtolower($column['type']), 'unsigned');
             $bounds = match ($type) {
                 'tinyint' => $unsigned ? [0, 255] : [-128, 127],
                 'smallint' => $unsigned ? [0, 65535] : [-32768, 32767],
@@ -468,7 +472,7 @@ final readonly class RelationQueryPlanner
         if (!is_string($ids[0]) || !in_array($type, ['char', 'varchar', 'tinytext', 'text', 'mediumtext', 'longtext'], true)) {
             return null;
         }
-        $collation = $column['Collation'];
+        $collation = $column['collation'];
         // A conversion to a narrower charset can replace input characters
         // with '?'. Retain the original comparison in that case.
         if (!is_string($collation) || !str_starts_with($collation, 'utf8mb4_') || !self::simpleIdentifier($collation)) {
@@ -490,7 +494,7 @@ final readonly class RelationQueryPlanner
         } finally {
             $statement->close();
         }
-        $version = $row === false ? null : $row['server_version'];
+        $version = $row === false ? null : array_change_key_case($row, CASE_LOWER)['server_version'];
 
         return is_string($version) && stripos($version, 'MariaDB') === false
             && preg_match('/\A(\d+\.\d+\.\d+)/', $version, $matches) === 1
@@ -538,6 +542,7 @@ final readonly class RelationQueryPlanner
             return null;
         }
 
+        $row = array_change_key_case($row, CASE_LOWER);
         $type = $row['type_name'];
         if ($binary) {
             // Binary comparison can treat differently sized values as
