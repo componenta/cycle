@@ -107,7 +107,7 @@ final readonly class RelationQueryPlanner
                 continue;
             }
 
-            if ($plan !== null && $driver->getType() === 'MySQL' && count($bindings) > 1) {
+            if ($plan !== null && $driver->getType() === 'MySQL' && count($bindings) > 1 && count($ids) < 16) {
                 $query = self::mysqlPredicateQuery($base, $plan, $bindings, $driver);
                 $parameters = new QueryParameters();
                 $sql = $compiler->compile($parameters, $prefix, $query);
