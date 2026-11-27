@@ -203,16 +203,32 @@ final readonly class RelationLoader
         $groups = [];
         $individual = false;
         foreach ($this->planner->queries($base, $column, $ids, $binary, $plan) as $batch) {
-            $matches = self::readBatch($driver, $batch, $individual);
-            $ordinals = $batch[2];
-            foreach ($matches as $ordinal => $rows) {
-                if ($ordinals !== null) {
-                    $ordinal = $ordinals[$ordinal] ?? throw new \UnexpectedValueException('An exact relation lookup returned an unrequested key.');
-                }
-                $groups[$ordinal] = $transform === null ? $rows : array_map($transform, $rows);
-            }
+            self::readGroups($driver, $batch, $groups, $transform, $individual);
         }
         return $groups;
+    }
+
+    /**
+     * Keep raw rows scoped to one batch. In particular, a transformed
+     * batch must not remain alive while the next statement is being read.
+     *
+     * @param array{0: string, 1: array, 2: ?array, 3?: list<array{string, array}>} $batch
+     */
+    private static function readGroups(
+        DriverInterface $driver,
+        array $batch,
+        array &$groups,
+        ?Closure $transform,
+        bool &$individual,
+    ): void {
+        $matches = self::readBatch($driver, $batch, $individual);
+        $ordinals = $batch[2];
+        foreach ($matches as $ordinal => $rows) {
+            if ($ordinals !== null) {
+                $ordinal = $ordinals[$ordinal] ?? throw new \UnexpectedValueException('An exact relation lookup returned an unrequested key.');
+            }
+            $groups[$ordinal] = $transform === null ? $rows : array_map($transform, $rows);
+        }
     }
 
     /**
@@ -221,7 +237,7 @@ final readonly class RelationLoader
      * multiple independent SELECT arms. Keep this decision execution-local.
      * No application callback runs until all rows in the batch are read.
      *
-     * @param array{string, array, ?array, 3?: list<array{string, array}>} $batch
+     * @param array{0: string, 1: array, 2: ?array, 3?: list<array{string, array}>} $batch
      */
     private static function readBatch(DriverInterface $driver, array $batch, bool &$individual): array
     {
