@@ -181,3 +181,102 @@ it('preserves PostgreSQL domain-specific equality instead of coercing to its bas
         $db->execute('DROP DOMAIN IF EXISTS cycle_test_lookup_domain');
     }
 });
+
+
+it('keeps floating point keys distinct when PHP serialization precision is reduced', function (): void {
+    $db = relationEqualityDatabase();
+    $previous = ini_set('serialize_precision', '2');
+    try {
+        $db->execute('CREATE TABLE cycle_test_lookup (lookup_key DECIMAL(10, 2), seq INTEGER)');
+        $db->execute("INSERT INTO cycle_test_lookup VALUES (1.21, 1), (1.22, 2), (1.23, 3)");
+        $fetcher = new RelationLookupOracleFetcher($db, false);
+        $keys = [1.21, 1.22, 1.23, 1.21, null, 1.24];
+        $expected = [];
+        foreach ($keys as $key) {
+            if ($key === null) {
+                $expected[] = [];
+                continue;
+            }
+            $rows = $db->select('seq')->from('cycle_test_lookup')
+                ->where('lookup_key', '=', new Parameter($key))->fetchAll();
+            $expected[] = array_map(static fn (array $row): int => (int) $row['seq'], $rows);
+        }
+        expect($expected)->toBe([[1], [2], [3], [1], [], []]);
+        expect($fetcher($keys))->toBe($expected);
+        expect($fetcher($keys))->toBe($expected);
+    } finally {
+        if ($previous !== false) {
+            ini_set('serialize_precision', $previous);
+        }
+        $db->execute('DROP TABLE IF EXISTS cycle_test_lookup');
+    }
+});
+
+it('reused relation fetchers follow a replacement schema and fresh comparison rules', function (): void {
+    $db = relationEqualityDatabase();
+    $fetcher = new RelationLookupOracleFetcher($db, false);
+    $keys = ['1', '01', ...array_map('strval', range(10, 40))];
+    $textType = match ($db->getType()) {
+        'MySQL' => 'VARCHAR(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin',
+        'SQLServer' => 'VARCHAR(64) COLLATE Latin1_General_100_BIN2',
+        'Postgres' => 'VARCHAR(64) COLLATE "C"',
+        default => 'TEXT COLLATE BINARY',
+    };
+    try {
+        $db->execute('CREATE TABLE cycle_test_lookup (lookup_key BIGINT, seq INTEGER)');
+        $db->execute('INSERT INTO cycle_test_lookup VALUES (1, 1)');
+        $expected = [[1], [1], ...array_fill(0, 31, [])];
+        expect($fetcher($keys))->toBe($expected);
+        $db->execute('DROP TABLE cycle_test_lookup');
+        $db->execute("CREATE TABLE cycle_test_lookup (lookup_key $textType, seq INTEGER)");
+        $db->execute("INSERT INTO cycle_test_lookup VALUES ('1', 1), ('01', 2)");
+        $expected = [[1], [2], ...array_fill(0, 31, [])];
+        expect($fetcher($keys))->toBe($expected);
+        expect((new RelationLookupOracleFetcher($db, false))($keys))->toBe($expected);
+    } finally {
+        $db->execute('DROP TABLE IF EXISTS cycle_test_lookup');
+    }
+});
+
+it('loads a small batch from a MySQL temporary relation table', function (): void {
+    $db = relationEqualityDatabase();
+    if ($db->getType() !== 'MySQL') {
+        \PHPUnit\Framework\Assert::markTestSkipped('MySQL temporary table reopening limitation.');
+    }
+    try {
+        $db->execute('CREATE TEMPORARY TABLE cycle_test_lookup (lookup_key INTEGER, seq INTEGER)');
+        $db->execute('INSERT INTO cycle_test_lookup VALUES (1, 10), (2, 20)');
+        $fetcher = new RelationLookupOracleFetcher($db, false);
+        expect($fetcher([1, 2, 3, 1, null]))->toBe([[10], [20], [], [10], []]);
+    } finally {
+        $db->execute('DROP TEMPORARY TABLE IF EXISTS cycle_test_lookup');
+    }
+});
+
+it('does not require the default PDO column name case for MySQL metadata', function (): void {
+    if (getenv('CYCLE_TEST_DB_DRIVER') !== 'mysql') {
+        \PHPUnit\Framework\Assert::markTestSkipped('MySQL metadata case handling.');
+    }
+    $db = new \Cycle\Database\Database('case-test', '', \Cycle\Database\Driver\MySQL\MySQLDriver::create(
+        new \Cycle\Database\Config\MySQLDriverConfig(
+            new \Cycle\Database\Config\MySQL\TcpConnectionConfig(
+                database: getenv('CYCLE_TEST_DB_NAME') ?: 'cycle_tests',
+                host: getenv('CYCLE_TEST_DB_HOST') ?: '127.0.0.1',
+                port: (int) (getenv('CYCLE_TEST_DB_PORT') ?: 3306),
+                user: getenv('CYCLE_TEST_DB_USER') ?: 'root',
+                password: getenv('CYCLE_TEST_DB_PASSWORD') ?: '',
+                options: [\PDO::ATTR_CASE => \PDO::CASE_LOWER],
+            ),
+            queryCache: false,
+        ),
+    ));
+    try {
+        $db->execute('CREATE TABLE cycle_test_lookup (lookup_key INTEGER, seq INTEGER)');
+        $db->execute('INSERT INTO cycle_test_lookup VALUES (1, 10), (2, 20)');
+        $keys = range(1, 32);
+        expect((new RelationLookupOracleFetcher($db, false))($keys))->toBe([[10], [20], ...array_fill(0, 30, [])]);
+    } finally {
+        $db->execute('DROP TABLE IF EXISTS cycle_test_lookup');
+        $db->getDriver()->disconnect();
+    }
+});
