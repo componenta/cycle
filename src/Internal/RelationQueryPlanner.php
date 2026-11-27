@@ -1,0 +1,413 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Componenta\Cycle\Internal;
+
+use Cycle\Database\DatabaseInterface;
+use Cycle\Database\Driver\DriverInterface;
+use Cycle\Database\Injection\Fragment;
+use Cycle\Database\Injection\Parameter;
+use Cycle\Database\Query\QueryParameters;
+use Cycle\Database\Query\SelectQuery;
+use PDO;
+
+/** Builds bounded, parameterized SQL for native database equality. @internal */
+final readonly class RelationQueryPlanner
+{
+    private const int BATCH_SIZE = 500;
+
+    public function __construct(private DatabaseInterface $db) {}
+
+    /**
+     * Each returned statement projects the original lookup ordinal first.
+     *
+     * @param list<mixed> $ids
+     * @return iterable<array{string, array}>
+     */
+    public function queries(
+        SelectQuery $base,
+        string $column,
+        array $ids,
+        bool $binary,
+        ?array $plan,
+    ): iterable {
+        if ($ids === []) {
+            return;
+        }
+        $driver = $base->getDriver() ?? throw new \LogicException('A relation query must have a database driver.');
+        $compiler = $driver->getQueryCompiler();
+        $prefix = $base->getPrefix() ?? '';
+        $projection = self::groupProjection($base, $driver);
+        $postgresSeed = $plan !== null && $driver->getType() === 'Postgres'
+            ? $this->typedSeed($plan, $driver, $prefix)
+            : null;
+        $sqlServerSeed = $plan !== null && $driver->getType() === 'SQLServer' && count($ids) >= 16
+            && self::uniformKeys($ids)
+            ? $this->typedSeed($plan, $driver, $prefix)
+            : null;
+        $mysqlPlan = $plan !== null && $driver->getType() === 'MySQL' && count($ids) >= 16
+            ? $this->mysqlPlan($plan, $driver, $prefix, $ids, $binary)
+            : null;
+        // SQLite's conservative limit also supports builds with the older
+        // 999-variable default; reserve room below SQL Server's 2100 limit.
+        $maxParameters = match ($driver->getType()) {
+            'SQLite' => 999,
+            'SQLServer' => 2000,
+            default => 65535,
+        };
+        foreach (array_chunk($ids, self::BATCH_SIZE, true) as $chunk) {
+            $bindings = array_map(
+                static fn (mixed $id): Parameter => new Parameter($id, $binary ? PDO::PARAM_LOB : Parameter::DETECT_TYPE),
+                $chunk,
+            );
+            if ($plan !== null && $driver->getType() === 'SQLite') {
+                $query = $this->sqliteQuery($plan, $bindings);
+                $parameters = new QueryParameters();
+                $sql = $compiler->compile($parameters, $prefix, $query);
+                yield [$sql, $parameters->getParameters()];
+                continue;
+            }
+            if ($postgresSeed !== null) {
+                $query = self::postgresQuery($base, $plan, $bindings, $postgresSeed);
+                $parameters = new QueryParameters();
+                $sql = $compiler->compile($parameters, $prefix, $query);
+                yield [$sql, $parameters->getParameters()];
+                continue;
+            }
+
+            if ($sqlServerSeed !== null || $mysqlPlan !== null) {
+                $query = self::serverKeyQuery($base, $plan, $bindings, $driver, $sqlServerSeed, $mysqlPlan);
+                $parameters = new QueryParameters();
+                $sql = $compiler->compile($parameters, $prefix, $query);
+                yield [$sql, $parameters->getParameters()];
+                continue;
+            }
+
+            // Each comparison is typed by its actual target column. A
+            // heterogeneous VALUES table would coerce or reject keys on
+            // PostgreSQL/SQL Server. Compile standalone arms: SQLite rejects
+            // the parentheses DBAL adds around nested SELECT fragments.
+            $arms = [];
+            $queryBindings = [];
+            foreach ($bindings as $ordinal => $parameter) {
+                $arm = (clone $base)
+                    ->columns([new Fragment((string) $ordinal), ...$projection])
+                    ->where($column, '=', $parameter);
+                $parameters = new QueryParameters();
+                $sql = $compiler->compile($parameters, $prefix, $arm);
+                $armBindings = $parameters->getParameters();
+                // Trusted projections may themselves contain parameters;
+                // count the real compiled bindings, not only lookup keys.
+                if ($arms !== [] && count($queryBindings) + count($armBindings) > $maxParameters) {
+                    yield [implode("\nUNION ALL\n", $arms), $queryBindings];
+                    $arms = [];
+                    $queryBindings = [];
+                }
+                $arms[] = $sql;
+                array_push($queryBindings, ...$armBindings);
+            }
+            yield [implode("\nUNION ALL\n", $arms), $queryBindings];
+        }
+    }
+
+    /**
+     * MySQL does not accept an unqualified star after a preceding SELECT
+     * expression. Qualify the existing source rather than introducing an
+     * alias that would invalidate a caller's qualified column names.
+     */
+    private static function groupProjection(SelectQuery $base, DriverInterface $driver): array
+    {
+        $columns = $base->getColumns();
+        if ($driver->getType() !== 'MySQL' || !in_array('*', $columns, true)) {
+            return $columns;
+        }
+
+        // Relation bases have exactly one named FROM source. A schema-
+        // qualified name uses its final component as the table qualifier.
+        $source = $base->getTables()[0];
+        $parts = preg_split('/ AS /i', $source, 2);
+        $qualifier = $parts[1] ?? null;
+        if ($qualifier === null) {
+            $separator = strrpos($source, '.');
+            $qualifier = $separator === false
+                ? ($base->getPrefix() ?? '') . $source
+                : substr($source, $separator + 1);
+        }
+        $star = new Fragment($driver->getQueryCompiler()->quoteIdentifier($qualifier) . '.*');
+
+        return array_map(static fn (mixed $column): mixed => $column === '*' ? $star : $column, $columns);
+    }
+
+    /**
+     * Simple projections can be joined to a native lookup-key relation.
+     * Complex trusted projections use the portable compound-query path.
+     *
+     * @return array{table: string, columns: list<string>, key: string, keyTable: string, keyColumn: string, alias: string, tableName: string, pivotForeignKey: ?string, relatedKey: ?string}|null
+     */
+    public static function joinPlan(
+        string $table,
+        array $columns,
+        string $column,
+        string $alias = 'r',
+        ?string $keyTable = null,
+        ?string $pivotForeignKey = null,
+        ?string $relatedKey = null,
+    ): ?array {
+        if ($keyTable !== null && (!self::simpleIdentifier($keyTable) || !self::simpleIdentifier($pivotForeignKey ?? '') || !self::simpleIdentifier($relatedKey ?? ''))) {
+            return null;
+        }
+        if (!self::simpleIdentifier($table) || !self::simpleIdentifier($column) || !array_is_list($columns)) {
+            return null;
+        }
+        $qualified = [];
+        foreach ($columns as $field) {
+            if ($field === '*') {
+                $qualified[] = 'r.*';
+            } elseif (is_string($field) && self::simpleIdentifier($field)) {
+                $qualified[] = 'r.' . $field;
+            } else {
+                return null;
+            }
+        }
+        return [
+            'table' => "$table AS r",
+            'columns' => $qualified,
+            'key' => "\"$alias\".\"$column\"",
+            'keyTable' => $keyTable ?? $table,
+            'keyColumn' => $column,
+            'alias' => $alias,
+            'tableName' => $table,
+            'pivotForeignKey' => $pivotForeignKey,
+            'relatedKey' => $relatedKey,
+        ];
+    }
+
+    private static function simpleIdentifier(string $name): bool
+    {
+        return preg_match('/\A[A-Za-z_][A-Za-z0-9_]*\z/', $name) === 1;
+    }
+
+    /** @param array<int, Parameter> $bindings */
+    private function sqliteQuery(array $plan, array $bindings): SelectQuery
+    {
+        $values = [];
+        foreach ($bindings as $ordinal => $parameter) {
+            $values[] = '(?, ' . $ordinal . ')';
+        }
+        $keys = new Fragment('(VALUES ' . implode(', ', $values) . ') AS "_componenta_keys"', ...array_values($bindings));
+
+        // SQLite may otherwise scan an entire BLOB-key table before probing
+        // a tiny VALUES relation. CROSS JOIN fixes the outer loop to the
+        // requested keys; the lookup column's index remains usable.
+        $query = $this->db->select([new Fragment('"_componenta_keys"."column2"'), ...$plan['columns']])
+            ->from($keys);
+        if ($plan['alias'] === 'p') {
+            $query->join('CROSS', $plan['keyTable'], 'p')
+                ->innerJoin($plan['tableName'], 'r')
+                ->on('p.' . $plan['pivotForeignKey'], 'r.' . $plan['relatedKey']);
+        } else {
+            $query->join('CROSS', $plan['tableName'], 'r');
+        }
+
+        return $query->where(new Fragment($plan['key'] . ' = "_componenta_keys"."column1"'));
+    }
+
+    /**
+     * PostgreSQL infers bound values from the actual lookup column, not
+     * from the PHP representation. The empty scalar subquery supplies its
+     * SQL type without reading any target rows.
+     *
+     * @param array{table: string, columns: list<string>, key: string, keyTable: string, keyColumn: string, alias: string, tableName: string, pivotForeignKey: ?string, relatedKey: ?string} $plan
+     */
+    private function typedSeed(array $plan, DriverInterface $driver, string $prefix): string
+    {
+        $seed = $this->db->select([$plan['keyColumn']])
+            ->from($plan['keyTable'])
+            ->where(new Fragment('1 = 0'));
+        return $driver->getQueryCompiler()->compile(new QueryParameters(), $prefix, $seed);
+    }
+
+    /** @param array<int, Parameter> $bindings */
+    private static function postgresQuery(SelectQuery $base, array $plan, array $bindings, string $seed): SelectQuery
+    {
+        // The first array slot is a typed SQL NULL. WITH ORDINALITY
+        // associates every remaining value with its exact input position,
+        // even when distinct inputs compare equal in the database.
+        $placeholders = implode(', ', array_fill(0, count($bindings), '?'));
+        $keys = new Fragment(
+            'unnest(ARRAY[(' . $seed . '), ' . $placeholders
+                . ']) WITH ORDINALITY AS "_componenta_keys"("value", "ordinal")',
+            ...array_values($bindings),
+        );
+        $first = array_key_first($bindings);
+        return (clone $base)
+            ->from([$keys, $plan['table']])
+            ->columns([new Fragment('"_componenta_keys"."ordinal" - 2 + ' . $first), ...$plan['columns']])
+            ->where(new Fragment($plan['key'] . ' = "_componenta_keys"."value"'))
+            ->where(new Fragment('"_componenta_keys"."ordinal" > 1'));
+    }
+
+    /** @param list<mixed> $ids */
+    private static function uniformKeys(array $ids): bool
+    {
+        $type = gettype($ids[0]);
+        if ($type !== 'integer' && $type !== 'string') {
+            return false;
+        }
+        foreach ($ids as $id) {
+            if (gettype($id) !== $type) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * MySQL chooses a common type for derived columns. Inspect the real
+     * lookup column before selecting a cast. Never use a string-derived
+     * comparison for integer keys, or replace the target collation.
+     *
+     * Capability and column metadata are execution-scoped, not cached
+     * across requests or reconnections.
+     *
+     * @return array{cast: string, json: ?string}|null
+     */
+    private function mysqlPlan(array $plan, DriverInterface $driver, string $prefix, array $ids, bool $binary): ?array
+    {
+        if (!self::uniformKeys($ids)) {
+            return null;
+        }
+        $statement = $driver->query(
+            'SELECT VERSION() AS server_version, DATA_TYPE AS data_type,'
+                . ' CHARACTER_SET_NAME AS character_set_name, COLLATION_NAME AS collation_name'
+                . ' FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE()'
+                . ' AND TABLE_NAME = ? AND COLUMN_NAME = ?',
+            [new Parameter($prefix . $plan['keyTable']), new Parameter($plan['keyColumn'])],
+        );
+        try {
+            $column = $statement->fetch();
+        } finally {
+            $statement->close();
+        }
+        if ($column === false) {
+            return null;
+        }
+        $version = $column['server_version'];
+        $json = is_string($version) && stripos($version, 'MariaDB') === false
+            && preg_match('/\A(\d+\.\d+\.\d+)/', $version, $matches) === 1
+            && version_compare($matches[1], '8.0.4', '>=');
+        $type = strtolower($column['data_type']);
+
+        if (in_array($type, ['binary', 'varbinary', 'tinyblob', 'blob', 'mediumblob', 'longblob'], true)
+            && is_string($ids[0])) {
+            foreach ($ids as $id) {
+                if (strlen($id) > 256) {
+                    $json = false;
+                    break;
+                }
+            }
+            return ['cast' => 'CAST(? AS BINARY)', 'json' => $json ? 'binary' : null];
+        }
+        if ($binary) {
+            // An explicit LOB binding must not become a text parameter.
+            return null;
+        }
+        if (in_array($type, ['tinyint', 'smallint', 'mediumint', 'int', 'bigint'], true)
+            && is_int($ids[0])) {
+            return ['cast' => 'CAST(? AS SIGNED)', 'json' => $json ? 'integer' : null];
+        }
+        if (!is_string($ids[0]) || !in_array($type, ['char', 'varchar', 'tinytext', 'text', 'mediumtext', 'longtext'], true)) {
+            return null;
+        }
+        $charset = $column['character_set_name'];
+        $collation = $column['collation_name'];
+        // A conversion to a narrower charset can replace input characters
+        // with '?'. Retain the original comparison in that case.
+        if ($charset !== 'utf8mb4' || !is_string($collation) || !self::simpleIdentifier($collation)) {
+            return null;
+        }
+        foreach ($ids as $id) {
+            if (preg_match('//u', $id) !== 1) {
+                return null;
+            }
+        }
+        return ['cast' => 'CAST(? AS CHAR CHARACTER SET utf8mb4) COLLATE ' . $collation, 'json' => null];
+    }
+
+    /**
+     * SQL Server uses a typed VALUES relation. Modern MySQL uses one JSON
+     * parameter for integers and short binary keys; the older-server and
+     * text paths use a derived relation of individual bound values.
+     *
+     * @param array<int, Parameter> $bindings
+     * @param array{cast: string, json: ?string}|null $mysql
+     */
+    private static function serverKeyQuery(
+        SelectQuery $base,
+        array $plan,
+        array $bindings,
+        DriverInterface $driver,
+        ?string $seed,
+        ?array $mysql,
+    ): SelectQuery {
+        $compiler = $driver->getQueryCompiler();
+        $alias = $compiler->quoteIdentifier('_componenta_keys');
+        $value = $alias . '.' . $compiler->quoteIdentifier('componenta_value');
+        $ordinal = $alias . '.' . $compiler->quoteIdentifier('componenta_ordinal');
+        $key = $compiler->quoteIdentifier($plan['alias'] . '.' . $plan['keyColumn']);
+
+        if ($seed !== null) {
+            $rows = ['((' . $seed . '), -1)'];
+            foreach ($bindings as $index => $parameter) {
+                $rows[] = '(?, ' . $index . ')';
+            }
+            $keys = new Fragment(
+                '(VALUES ' . implode(', ', $rows) . ') AS ' . $alias
+                    . '(componenta_value, componenta_ordinal)',
+                ...array_values($bindings),
+            );
+            $ordinalFilter = new Fragment($ordinal . ' >= 0');
+        } elseif ($mysql['json'] !== null) {
+            $binary = $mysql['json'] === 'binary';
+            $values = array_map(
+                static fn (Parameter $parameter): int|string => $binary
+                    ? bin2hex($parameter->getValue())
+                    : $parameter->getValue(),
+                array_values($bindings),
+            );
+            $type = $binary ? 'VARCHAR(512)' : 'BIGINT';
+            $keys = new Fragment(
+                "JSON_TABLE(?, '$[*]' COLUMNS (componenta_ordinal FOR ORDINALITY,"
+                    . " componenta_value $type PATH '$' ERROR ON ERROR)) AS " . $alias,
+                json_encode($values, JSON_THROW_ON_ERROR),
+            );
+            $ordinal = $ordinal . ' - 1 + ' . array_key_first($bindings);
+            if ($binary) {
+                $value = 'UNHEX(' . $value . ')';
+            }
+            $ordinalFilter = null;
+        } else {
+            $arms = [];
+            foreach ($bindings as $index => $parameter) {
+                $arms[] = 'SELECT ' . $mysql['cast'] . ' AS componenta_value, '
+                    . $index . ' AS componenta_ordinal';
+            }
+            $keys = new Fragment(
+                '(' . implode("\nUNION ALL\n", $arms) . ') AS ' . $alias,
+                ...array_values($bindings),
+            );
+            $ordinalFilter = null;
+        }
+
+        $query = (clone $base)
+            ->from([$keys, $plan['table']])
+            ->columns([new Fragment($ordinal), ...$plan['columns']])
+            ->where(new Fragment($key . ' = ' . $value));
+        if ($ordinalFilter !== null) {
+            $query->where($ordinalFilter);
+        }
+
+        return $query;
+    }
+}
