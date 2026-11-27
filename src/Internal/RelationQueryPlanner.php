@@ -394,7 +394,7 @@ final readonly class RelationQueryPlanner
         // even when distinct inputs compare equal in the database.
         $placeholders = implode(', ', array_fill(0, count($bindings), '?'));
         $keys = new Fragment(
-            'unnest(ARRAY[(' . $seed . '), ' . $placeholders
+            'pg_catalog.unnest(ARRAY[(' . $seed . '), ' . $placeholders
                 . ']) WITH ORDINALITY AS "_componenta_keys"("value", "ordinal")',
             ...array_values($bindings),
         );
