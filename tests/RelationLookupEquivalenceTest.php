@@ -316,9 +316,38 @@ it('loads bound projection expressions from a MySQL temporary table across batch
     }
 });
 
+it('does not interpret a relation callback exception as a database retry', function (): void {
+    $db = relationEqualityDatabase();
+    if ($db->getType() !== 'MySQL') {
+        \PHPUnit\Framework\Assert::markTestSkipped('MySQL-specific retry classification.');
+    }
+    try {
+        $db->execute('CREATE TABLE cycle_test_lookup (lookup_key INTEGER, seq INTEGER)');
+        $db->execute('INSERT INTO cycle_test_lookup VALUES (1, 10), (2, 20)');
+        $fetcher = new BoundTemporaryRelationFetcher($db);
+        $cause = new \PDOException('Application callback failed.');
+        $cause->errorInfo = ['HY000', 1137, 'Application callback failed.'];
+        $failure = new \Cycle\Database\Exception\StatementException($cause, 'callback');
+        $fetcher->failure = $failure;
+        try {
+            $fetcher([1, 2]);
+            \PHPUnit\Framework\Assert::fail('The callback exception must be propagated.');
+        } catch (\Cycle\Database\Exception\StatementException $caught) {
+            expect($caught)->toBe($failure);
+        }
+        expect($fetcher->transforms)->toBe(1);
+        $fetcher->failure = null;
+        expect($fetcher([1, 2]))->toBe([[17], [27]]);
+        expect($fetcher->transforms)->toBe(3);
+    } finally {
+        $db->execute('DROP TABLE IF EXISTS cycle_test_lookup');
+    }
+});
+
 final class BoundTemporaryRelationFetcher extends DataFetcher
 {
     public int $transforms = 0;
+    public ?\Throwable $failure = null;
 
     public function __invoke(array $keys): array
     {
@@ -333,6 +362,9 @@ final class BoundTemporaryRelationFetcher extends DataFetcher
             columns: [new \Cycle\Database\Injection\Fragment('seq + ? AS computed', new Parameter(7))],
             transform: function (array $row): int {
                 ++$this->transforms;
+                if ($this->failure !== null) {
+                    throw $this->failure;
+                }
                 return (int) $row['computed'];
             },
         );
