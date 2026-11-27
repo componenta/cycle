@@ -18,6 +18,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'push' }}
+
 jobs:
   compare:
     runs-on: ubuntu-latest
@@ -146,6 +150,15 @@ jobs:
           echo "Current $GITHUB_SHA"
           composer bench -- --filter=RelationDatabaseBench 2>&1 | tee "$RUNNER_TEMP/cycle-bench-current.log"
           grep -Eq 'Subjects: [1-9][0-9]*,' "$RUNNER_TEMP/cycle-bench-current.log"
+          # Repeat in reverse order on the same runner and dependency set.
+          # This brackets current samples with baseline samples to expose
+          # systematic warm-up or runner-load drift.
+          echo "Current repeat $GITHUB_SHA"
+          composer bench -- --filter=RelationDatabaseBench 2>&1 | tee "$RUNNER_TEMP/cycle-bench-current-repeat.log"
+          grep -Eq 'Subjects: [1-9][0-9]*,' "$RUNNER_TEMP/cycle-bench-current-repeat.log"
+          echo "Baseline repeat $ref"
+          CYCLE_BENCH_SOURCE_ROOT="$baseline/src" composer bench -- --filter=RelationDatabaseBench 2>&1 | tee "$RUNNER_TEMP/cycle-bench-baseline-repeat.log"
+          grep -Eq 'Subjects: [1-9][0-9]*,' "$RUNNER_TEMP/cycle-bench-baseline-repeat.log"
         env:
           CYCLE_TEST_DB_DRIVER: postgres
           CYCLE_TEST_DB_NAME: cycle_tests
@@ -157,6 +170,7 @@ jobs:
 
   sqlserver:
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     services:
       sqlserver:
         image: mcr.microsoft.com/mssql/server:2022-latest
