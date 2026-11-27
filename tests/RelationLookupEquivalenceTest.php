@@ -108,8 +108,11 @@ it('large relation batches match individual database predicates with cold and re
 
 final class RelationLookupOracleFetcher extends DataFetcher
 {
-    public function __construct(DatabaseInterface $db, private readonly bool $binary)
-    {
+    public function __construct(
+        DatabaseInterface $db,
+        private readonly bool $binary,
+        private readonly bool $aliased = false,
+    ) {
         parent::__construct($db);
     }
 
@@ -127,7 +130,8 @@ final class RelationLookupOracleFetcher extends DataFetcher
     protected function loadRelations(array &$results, array $rows, ?object $query): void
     {
         $this->batchHasMany($results, $rows, 'matches', 'cycle_test_lookup', 'lookup_key',
-            transform: static fn (array $row): int => (int) $row['seq']);
+            columns: $this->aliased ? ['seq AS match_seq'] : ['*'],
+            transform: fn (array $row): int => (int) $row[$this->aliased ? 'match_seq' : 'seq']);
         foreach ($results as &$row) {
             sort($row['matches']);
         }
@@ -248,6 +252,16 @@ it('loads a small batch from a MySQL temporary relation table', function (): voi
         $db->execute('INSERT INTO cycle_test_lookup VALUES (1, 10), (2, 20)');
         $fetcher = new RelationLookupOracleFetcher($db, false);
         expect($fetcher([1, 2, 3, 1, null]))->toBe([[10], [20], [], [10], []]);
+        $aliased = new RelationLookupOracleFetcher($db, false, true);
+        expect($aliased([1, 2, 3, 1, null]))->toBe([[10], [20], [], [10], []]);
+        // Exercise more than one batch when no exact numeric lookup applies.
+        $db->execute('DROP TEMPORARY TABLE cycle_test_lookup');
+        $db->execute('CREATE TEMPORARY TABLE cycle_test_lookup (lookup_key VARCHAR(64) CHARACTER SET latin1 COLLATE latin1_swedish_ci, seq INTEGER)');
+        $db->execute("INSERT INTO cycle_test_lookup VALUES ('abc', 1), ('ABC', 2)");
+        $keys = ['abc', 'ABC', ...array_map(static fn (int $i): string => "missing_$i", range(1, 501))];
+        $expected = [[1, 2], [1, 2], ...array_fill(0, 501, [])];
+        expect($fetcher($keys))->toBe($expected);
+        expect($aliased($keys))->toBe($expected);
     } finally {
         $db->execute('DROP TEMPORARY TABLE IF EXISTS cycle_test_lookup');
     }
